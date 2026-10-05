@@ -25,7 +25,8 @@
         { "step": "web", "include": ["server/internal/web/dist"] }
       ],
       "commands": [
-        "cd /app/server && CGO_ENABLED=0 go build -o /app/dusty ./cmd/dusty"
+        { "path": "/usr/local/go/bin" },
+        "cd /app/server && CGO_ENABLED=0 /usr/local/go/bin/go build -o /app/dusty ./cmd/dusty"
       ],
       "deployOutputs": [{ "include": ["dusty"] }]
     }
