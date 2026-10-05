@@ -15,6 +15,7 @@ import '../../data/models.dart';
 import 'book_card.dart';
 import 'dialogs.dart';
 import 'library_providers.dart';
+import 'library_query.dart';
 import 'picker_options_stub.dart'
     if (dart.library.js_interop) 'picker_options_web.dart';
 import 'upload_dialog.dart';
@@ -31,10 +32,13 @@ class LibraryScreen extends ConsumerWidget {
     final wide = MediaQuery.sizeOf(context).width >= _wideBreakpoint;
     final data = library.asData?.value;
     // The app opens on the Active shelf; after that the user's choice sticks.
-    final selected = selection.explicit ? selection.id : data?.shelfOfKind(ShelfKind.active)?.id;
+    final selected = selection.explicit
+        ? selection.id
+        : data?.shelfOfKind(ShelfKind.active)?.id;
     final shelfName = selected == null
         ? 'All books'
-        : data?.shelves.where((s) => s.id == selected).firstOrNull?.name ?? 'Shelf';
+        : data?.shelves.where((s) => s.id == selected).firstOrNull?.name ??
+              'Shelf';
 
     final body = switch (library) {
       AsyncData(:final value) => _BookGrid(data: value, shelfId: selected),
@@ -42,7 +46,9 @@ class LibraryScreen extends ConsumerWidget {
       _ => const Center(child: CircularProgressIndicator()),
     };
 
-    final shelfPanel = data == null ? null : _ShelfPanel(data: data, selected: selected);
+    final shelfPanel = data == null
+        ? null
+        : _ShelfPanel(data: data, selected: selected);
 
     return Scaffold(
       appBar: AppBar(
@@ -51,14 +57,20 @@ class LibraryScreen extends ConsumerWidget {
           if (data?.offline == true)
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 8),
-              child: Tooltip(message: 'Offline: showing cached library', child: Icon(Icons.cloud_off)),
+              child: Tooltip(
+                message: 'Offline: showing cached library',
+                child: Icon(Icons.cloud_off),
+              ),
             ),
           IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
-            onPressed: () => ref.read(libraryProvider.notifier).refresh().catchError((Object e) {
-              if (context.mounted) showError(context, e);
-            }),
+            onPressed: () => ref
+                .read(libraryProvider.notifier)
+                .refresh()
+                .catchError((Object e) {
+                  if (context.mounted) showError(context, e);
+                }),
           ),
           PopupMenuButton<String>(
             onSelected: (v) async {
@@ -83,24 +95,51 @@ class LibraryScreen extends ConsumerWidget {
                     message: 'Every device signed in to this account will have to log in again.',
                     confirmLabel: 'Sign out everywhere',
                   );
-                  if (ok) await ref.read(sessionProvider.notifier).signOut(everywhere: true);
+                  if (ok) {
+                    await ref
+                        .read(sessionProvider.notifier)
+                        .signOut(everywhere: true);
+                  }
               }
             },
             itemBuilder: (_) => [
-              const PopupMenuItem(value: 'shelves', child: ListTile(leading: Icon(Icons.shelves), title: Text('Manage shelves'))),
+              const PopupMenuItem(
+                value: 'shelves',
+                child: ListTile(
+                  leading: Icon(Icons.shelves),
+                  title: Text('Manage shelves'),
+                ),
+              ),
               if (!kIsWeb)
-                const PopupMenuItem(value: 'server', child: ListTile(leading: Icon(Icons.dns_outlined), title: Text('Change server'))),
+                const PopupMenuItem(
+                  value: 'server',
+                  child: ListTile(
+                    leading: Icon(Icons.dns_outlined),
+                    title: Text('Change server'),
+                  ),
+                ),
               const PopupMenuDivider(),
-              const PopupMenuItem(value: 'logout', child: ListTile(leading: Icon(Icons.logout), title: Text('Sign out'))),
+              const PopupMenuItem(
+                value: 'logout',
+                child: ListTile(
+                  leading: Icon(Icons.logout),
+                  title: Text('Sign out'),
+                ),
+              ),
               const PopupMenuItem(
                 value: 'logout_all',
-                child: ListTile(leading: Icon(Icons.devices_other), title: Text('Sign out everywhere')),
+                child: ListTile(
+                  leading: Icon(Icons.devices_other),
+                  title: Text('Sign out everywhere'),
+                ),
               ),
             ],
           ),
         ],
       ),
-      drawer: wide || shelfPanel == null ? null : Drawer(child: SafeArea(child: shelfPanel)),
+      drawer: wide || shelfPanel == null
+          ? null
+          : Drawer(child: SafeArea(child: shelfPanel)),
       body: Column(
         children: [
           if (data?.offline == true) _OfflineBanner(data: data!),
@@ -108,7 +147,10 @@ class LibraryScreen extends ConsumerWidget {
             child: wide && shelfPanel != null
                 ? Row(
                     children: [
-                      SizedBox(width: 260, child: Material(elevation: 1, child: shelfPanel)),
+                      SizedBox(
+                        width: 260,
+                        child: Material(elevation: 1, child: shelfPanel),
+                      ),
                       Expanded(child: body),
                     ],
                   )
@@ -126,7 +168,12 @@ class LibraryScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _pickAndUpload(BuildContext context, WidgetRef ref, LibraryData data, int? shelfId) async {
+  Future<void> _pickAndUpload(
+    BuildContext context,
+    WidgetRef ref,
+    LibraryData data,
+    int? shelfId,
+  ) async {
     if (data.offline) {
       showError(context, NetworkException('cannot upload while offline'));
       return;
@@ -160,22 +207,32 @@ class LibraryScreen extends ConsumerWidget {
     final future = () async {
       final bytes = await file.readAsBytes();
       if (bytes.isEmpty) throw StateError('The selected file is empty.');
-      return ref.read(libraryProvider.notifier).upload(
-        filename: file.name,
-        bytes: bytes,
-        title: details.title,
-        author: details.author,
-        shelfId: shelfId ?? data.shelfOfKind(ShelfKind.active)?.id,
-        progress: progress,
-      );
+      return ref
+          .read(libraryProvider.notifier)
+          .upload(
+            filename: file.name,
+            bytes: bytes,
+            title: details.title,
+            author: details.author,
+            shelfId: shelfId ?? data.shelfOfKind(ShelfKind.active)?.id,
+            progress: progress,
+          );
     }();
     try {
-      final book = await showUploadDialog(context, filename: file.name, progress: progress, future: future);
+      final book = await showUploadDialog(
+        context,
+        filename: file.name,
+        progress: progress,
+        future: future,
+      );
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Added "${book.title}"'),
-            action: SnackBarAction(label: 'Read', onPressed: () => context.push(Routes.reader(book.id))),
+            action: SnackBarAction(
+              label: 'Read',
+              onPressed: () => context.push(Routes.reader(book.id)),
+            ),
           ),
         );
       }
@@ -217,7 +274,10 @@ class _ShelfPanel extends ConsumerWidget {
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
           child: Row(
             children: [
-              Icon(Icons.local_library_outlined, color: theme.colorScheme.primary),
+              Icon(
+                Icons.local_library_outlined,
+                color: theme.colorScheme.primary,
+              ),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
@@ -225,7 +285,12 @@ class _ShelfPanel extends ConsumerWidget {
                   children: [
                     Text('Dusty Library', style: theme.textTheme.titleMedium),
                     if (session.username != null)
-                      Text(session.username!, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline)),
+                      Text(
+                        session.username!,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.outline,
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -240,7 +305,12 @@ class _ShelfPanel extends ConsumerWidget {
           const Divider(),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-            child: Text('My shelves', style: theme.textTheme.labelLarge?.copyWith(color: theme.colorScheme.outline)),
+            child: Text(
+              'My shelves',
+              style: theme.textTheme.labelLarge?.copyWith(
+                color: theme.colorScheme.outline,
+              ),
+            ),
           ),
           for (final s in data.shelves.where((s) => !s.isPredefined))
             tile(s.name, shelfIcon(s.kind), s.id, data.booksOn(s.id).length),
@@ -250,7 +320,9 @@ class _ShelfPanel extends ConsumerWidget {
           leading: const Icon(Icons.add),
           title: const Text('Manage shelves'),
           onTap: () {
-            if (Scaffold.maybeOf(context)?.isDrawerOpen == true) Navigator.pop(context);
+            if (Scaffold.maybeOf(context)?.isDrawerOpen == true) {
+              Navigator.pop(context);
+            }
             showManageShelves(context, ref);
           },
         ),
@@ -259,70 +331,178 @@ class _ShelfPanel extends ConsumerWidget {
   }
 }
 
-class _BookGrid extends ConsumerWidget {
+class _BookGrid extends ConsumerStatefulWidget {
   const _BookGrid({required this.data, required this.shelfId});
   final LibraryData data;
   final int? shelfId;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final books = data.booksOn(shelfId);
-    if (books.isEmpty) {
+  ConsumerState<_BookGrid> createState() => _BookGridState();
+}
+
+class _BookGridState extends ConsumerState<_BookGrid> {
+  final _query = TextEditingController();
+
+  @override
+  void dispose() {
+    _query.dispose();
+    super.dispose();
+  }
+
+  void _open(Book book) {
+    final data = widget.data;
+    if (data.offline && !data.downloaded.contains(book.id)) {
+      showError(context, NetworkException('this book is not downloaded'));
+      return;
+    }
+    context.push(Routes.reader(book.id));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final data = widget.data;
+    final onShelf = data.booksOn(widget.shelfId);
+    if (onShelf.isEmpty) {
       final theme = Theme.of(context);
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.auto_stories_outlined, size: 64, color: theme.colorScheme.outline),
+            Icon(
+              Icons.auto_stories_outlined,
+              size: 64,
+              color: theme.colorScheme.outline,
+            ),
             const SizedBox(height: 12),
             Text('No books here yet', style: theme.textTheme.titleMedium),
             const SizedBox(height: 4),
-            Text('Use "Add book" to upload a PDF.', style: theme.textTheme.bodySmall),
+            Text(
+              'Use "Add book" to upload a PDF.',
+              style: theme.textTheme.bodySmall,
+            ),
           ],
         ),
       );
     }
-    return RefreshIndicator(
-      onRefresh: () => ref.read(libraryProvider.notifier).refresh().catchError((Object e) {
-        if (context.mounted) showError(context, e);
-      }),
-      child: GridView.builder(
-        padding: const EdgeInsets.fromLTRB(12, 12, 12, 88),
-        gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-          maxCrossAxisExtent: 200,
-          mainAxisExtent: 270,
-          crossAxisSpacing: 12,
-          mainAxisSpacing: 12,
-        ),
-        itemCount: books.length,
-        itemBuilder: (context, i) {
-          final book = books[i];
-          final downloaded = data.downloaded.contains(book.id);
-          return _CardEntry(
-            key: ValueKey(book.id),
-            delay: Duration(milliseconds: 40 * math.min(i, 10)),
-            child: BookCard(
-              book: book,
-              downloaded: downloaded,
-              onTap: () {
-                if (data.offline && !downloaded) {
-                  showError(context, NetworkException('this book is not downloaded'));
-                  return;
-                }
-                context.push(Routes.reader(book.id));
-              },
-              onMenu: () => showBookMenu(context, ref, book, downloaded: downloaded),
+
+    final query = _query.text;
+    final books = onShelf.where((b) => bookMatchesQuery(b, query)).toList();
+    final resume = query.trim().isEmpty ? continueReading(onShelf) : null;
+    final theme = Theme.of(context);
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+          child: TextField(
+            controller: _query,
+            textInputAction: TextInputAction.search,
+            decoration: InputDecoration(
+              hintText: 'Search title or author',
+              prefixIcon: const Icon(Icons.search),
+              suffixIcon: query.isEmpty
+                  ? null
+                  : IconButton(
+                      tooltip: 'Clear search',
+                      onPressed: () {
+                        _query.clear();
+                        setState(() {});
+                      },
+                      icon: const Icon(Icons.close),
+                    ),
+              isDense: true,
             ),
-          );
-        },
-      ),
+            onChanged: (_) => setState(() {}),
+          ),
+        ),
+        if (resume != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+            child: Material(
+              color: theme.colorScheme.secondaryContainer,
+              borderRadius: BorderRadius.circular(12),
+              clipBehavior: Clip.antiAlias,
+              child: ListTile(
+                leading: Icon(
+                  Icons.auto_stories,
+                  color: theme.colorScheme.onSecondaryContainer,
+                ),
+                title: Text(
+                  resume.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: Text(_continueLabel(resume)),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _open(resume),
+              ),
+            ),
+          ),
+        Expanded(
+          child: books.isEmpty
+              ? Center(
+                  child: Text(
+                    'No books match “${query.trim()}”',
+                    style: theme.textTheme.titleMedium,
+                  ),
+                )
+              : RefreshIndicator(
+                  onRefresh: () => ref
+                      .read(libraryProvider.notifier)
+                      .refresh()
+                      .catchError((Object e) {
+                        if (context.mounted) showError(context, e);
+                      }),
+                  child: GridView.builder(
+                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 88),
+                    gridDelegate:
+                        const SliverGridDelegateWithMaxCrossAxisExtent(
+                          maxCrossAxisExtent: 200,
+                          mainAxisExtent: 270,
+                          crossAxisSpacing: 12,
+                          mainAxisSpacing: 12,
+                        ),
+                    itemCount: books.length,
+                    itemBuilder: (context, i) {
+                      final book = books[i];
+                      final downloaded = data.downloaded.contains(book.id);
+                      return _CardEntry(
+                        key: ValueKey(book.id),
+                        delay: Duration(milliseconds: 40 * math.min(i, 10)),
+                        child: BookCard(
+                          book: book,
+                          downloaded: downloaded,
+                          onTap: () => _open(book),
+                          onMenu: () => showBookMenu(
+                            context,
+                            ref,
+                            book,
+                            downloaded: downloaded,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+        ),
+      ],
     );
   }
 }
 
+String _continueLabel(Book book) {
+  final page = book.currentPage < 1 ? 1 : book.currentPage;
+  if (book.pageCount > 0) return 'Continue · page $page of ${book.pageCount}';
+  return 'Continue · page $page';
+}
+
 /// Fades and scales a card in when it first appears (new upload, first load).
 class _CardEntry extends StatefulWidget {
-  const _CardEntry({super.key, required this.child, this.delay = Duration.zero});
+  const _CardEntry({
+    super.key,
+    required this.child,
+    this.delay = Duration.zero,
+  });
   final Widget child;
   final Duration delay;
 
@@ -330,10 +510,20 @@ class _CardEntry extends StatefulWidget {
   State<_CardEntry> createState() => _CardEntryState();
 }
 
-class _CardEntryState extends State<_CardEntry> with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 420));
-  late final Animation<double> _scale = Tween(begin: 0.88, end: 1.0).animate(CurvedAnimation(parent: _c, curve: Curves.easeOutBack));
-  late final Animation<double> _fade = CurvedAnimation(parent: _c, curve: Curves.easeOut);
+class _CardEntryState extends State<_CardEntry>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 420),
+  );
+  late final Animation<double> _scale = Tween(
+    begin: 0.88,
+    end: 1.0,
+  ).animate(CurvedAnimation(parent: _c, curve: Curves.easeOutBack));
+  late final Animation<double> _fade = CurvedAnimation(
+    parent: _c,
+    curve: Curves.easeOut,
+  );
 
   @override
   void initState() {
@@ -350,8 +540,10 @@ class _CardEntryState extends State<_CardEntry> with SingleTickerProviderStateMi
   }
 
   @override
-  Widget build(BuildContext context) =>
-      FadeTransition(opacity: _fade, child: ScaleTransition(scale: _scale, child: widget.child));
+  Widget build(BuildContext context) => FadeTransition(
+    opacity: _fade,
+    child: ScaleTransition(scale: _scale, child: widget.child),
+  );
 }
 
 class _OfflineBanner extends StatelessWidget {
@@ -400,9 +592,16 @@ class _ErrorView extends ConsumerWidget {
           children: [
             Icon(Icons.error_outline, size: 56, color: theme.colorScheme.error),
             const SizedBox(height: 12),
-            Text('Could not load your library', style: theme.textTheme.titleMedium),
+            Text(
+              'Could not load your library',
+              style: theme.textTheme.titleMedium,
+            ),
             const SizedBox(height: 4),
-            Text(describeError(error), textAlign: TextAlign.center, style: theme.textTheme.bodySmall),
+            Text(
+              describeError(error),
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall,
+            ),
             const SizedBox(height: 16),
             FilledButton.icon(
               onPressed: () => ref.invalidate(libraryProvider),

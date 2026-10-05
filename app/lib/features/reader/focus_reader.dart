@@ -8,6 +8,7 @@ import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:pdfrx/pdfrx.dart';
 
 import 'reading_position.dart';
+import 'word_lookup.dart';
 
 /// Lets the reader screen drive a [FocusReader] (go to page).
 class FocusReaderController {
@@ -43,6 +44,7 @@ class FocusReader extends StatefulWidget {
     required this.onReady,
     required this.onPositionChanged,
     required this.onTap,
+    this.onWord,
     this.controller,
   });
 
@@ -58,6 +60,9 @@ class FocusReader extends StatefulWidget {
 
   /// A tap on the page, with the position and size of the reader.
   final void Function(Offset localPosition, Size viewSize) onTap;
+
+  /// A word under a long-press, when the page has selectable text there.
+  final ValueChanged<String>? onWord;
   final FocusReaderController? controller;
 
   @override
@@ -82,6 +87,7 @@ class _FocusReaderState extends State<FocusReader> {
   /// Ignores scroll events while a programmatic jump is in flight, so opening
   /// a book does not overwrite the saved spot with the top of the first page.
   bool _suppress = true;
+  final _pageText = <int, PdfPageText>{};
 
   @override
   void initState() {
@@ -118,7 +124,10 @@ class _FocusReaderState extends State<FocusReader> {
 
   Future<void> _open() async {
     try {
-      final doc = await PdfDocument.openData(widget.bytes, sourceName: widget.sourceName);
+      final doc = await PdfDocument.openData(
+        widget.bytes,
+        sourceName: widget.sourceName,
+      );
       if (!mounted) {
         doc.dispose();
         return;
@@ -186,15 +195,26 @@ class _FocusReaderState extends State<FocusReader> {
   Future<void> _turn(int direction) async {
     if (!_scroll.hasClients || direction == 0) return;
     final pos = _scroll.position;
-    final target = (pos.pixels + direction * pos.viewportDimension).clamp(0.0, pos.maxScrollExtent);
-    await _scroll.animateTo(target, duration: const Duration(milliseconds: 220), curve: Curves.easeOutCubic);
+    final target = (pos.pixels + direction * pos.viewportDimension).clamp(
+      0.0,
+      pos.maxScrollExtent,
+    );
+    await _scroll.animateTo(
+      target,
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+    );
   }
 
   Future<void> _goToPage(int pageNumber) async {
     if (_offsets.isEmpty || !_scroll.hasClients) return;
     final idx = (pageNumber - 1).clamp(0, _heights.length - 1);
     final target = _offsets[idx].clamp(0.0, _scroll.position.maxScrollExtent);
-    await _scroll.animateTo(target, duration: const Duration(milliseconds: 250), curve: Curves.easeOutCubic);
+    await _scroll.animateTo(
+      target,
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOutCubic,
+    );
   }
 
   void _jumpToSavedSpot() {
@@ -203,10 +223,60 @@ class _FocusReaderState extends State<FocusReader> {
       return;
     }
     final pages = _focusPages;
-    final target = focusScrollOffset(spot: ReadingSpot(_page, _pageOffset), pages: pages);
+    final target = focusScrollOffset(
+      spot: ReadingSpot(_page, _pageOffset),
+      pages: pages,
+    );
     _suppress = true;
     _scroll.jumpTo(target.clamp(0.0, _scroll.position.maxScrollExtent));
     _suppress = false;
+  }
+
+  Future<void> _onLongPress(Offset local) async {
+    final word = await _wordAt(local);
+    if (!mounted || word == null) return;
+    widget.onWord?.call(word);
+  }
+
+  /// Maps a viewport point through the crop back onto the page's glyphs.
+  Future<String?> _wordAt(Offset local) async {
+    final doc = _doc;
+    final layout = _layout;
+    if (doc == null ||
+        layout == null ||
+        !_scroll.hasClients ||
+        _heights.isEmpty) {
+      return null;
+    }
+    final contentY = _scroll.offset + local.dy;
+    var index = _heights.length - 1;
+    for (var i = 0; i < _heights.length; i++) {
+      if (contentY < _offsets[i] + _heights[i]) {
+        index = i;
+        break;
+      }
+    }
+    final page = doc.pages[index];
+    final crop = layout.crops[index];
+    final height = _heights[index];
+    if (crop.width <= 0 || height <= 0 || _layoutWidth <= 0) return null;
+    final yInPage = contentY - _offsets[index];
+    final point = Offset(
+      crop.left + (local.dx / _layoutWidth) * crop.width,
+      crop.top + (yInPage / height) * crop.height,
+    );
+    try {
+      final text = _pageText[index] ??= await page.loadStructuredText();
+      if (!mounted) return null;
+      final rects = [
+        for (final rect in text.charRects) rect.toRect(page: page),
+      ];
+      final hit = charIndexAt(rects, point);
+      if (hit == null) return null;
+      return wordAtIndex(text.fullText, hit);
+    } catch (_) {
+      return null;
+    }
   }
 
   // --- build --------------------------------------------------------------
@@ -224,7 +294,9 @@ class _FocusReaderState extends State<FocusReader> {
           children: [
             const CircularProgressIndicator(),
             const SizedBox(height: 12),
-            Text(_total > 0 ? 'Measuring pages $_measured / $_total' : 'Opening…'),
+            Text(
+              _total > 0 ? 'Measuring pages $_measured / $_total' : 'Opening…',
+            ),
           ],
         ),
       );
@@ -248,7 +320,13 @@ class _FocusReaderState extends State<FocusReader> {
         final dpr = MediaQuery.devicePixelRatioOf(context);
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onTapUp: (details) => widget.onTap(details.localPosition, Size(width, constraints.maxHeight)),
+          onTapUp: (details) => widget.onTap(
+            details.localPosition,
+            Size(width, constraints.maxHeight),
+          ),
+          onLongPressEnd: widget.onWord == null
+              ? null
+              : (details) => _onLongPress(details.localPosition),
           child: ColoredBox(
             color: widget.backgroundColor,
             child: ListView.builder(
@@ -292,7 +370,9 @@ class _FocusLayout {
     required ValueChanged<int> onProgress,
   }) async {
     final cached = _cache[cacheKey];
-    if (cached != null && cached.crops.length == doc.pages.length) return cached;
+    if (cached != null && cached.crops.length == doc.pages.length) {
+      return cached;
+    }
 
     final bounds = <Rect?>[];
     for (var i = 0; i < doc.pages.length; i++) {
@@ -364,8 +444,17 @@ class _FocusLayout {
       // Skip whitespace and degenerate/oversized boxes (PDFium reports odd
       // rectangles for control characters and some spacing glyphs).
       if (i < chars.length && chars[i].trim().isEmpty) continue;
-      if (r.isEmpty || r.width > page.width * 0.5 || r.height > page.height * 0.5) continue;
-      if (r.right < 0 || r.left > page.width || r.top < 0 || r.bottom > page.height) continue;
+      if (r.isEmpty ||
+          r.width > page.width * 0.5 ||
+          r.height > page.height * 0.5) {
+        continue;
+      }
+      if (r.right < 0 ||
+          r.left > page.width ||
+          r.top < 0 ||
+          r.bottom > page.height) {
+        continue;
+      }
       acc = acc == null ? r : acc.merge(r);
     }
     if (acc == null) return null;
@@ -413,7 +502,9 @@ class _CroppedPageState extends State<_CroppedPage> {
   @override
   void didUpdateWidget(covariant _CroppedPage old) {
     super.didUpdateWidget(old);
-    if (old.width != widget.width || old.crop != widget.crop || old.devicePixelRatio != widget.devicePixelRatio) {
+    if (old.width != widget.width ||
+        old.crop != widget.crop ||
+        old.devicePixelRatio != widget.devicePixelRatio) {
       _render();
     }
   }
@@ -431,7 +522,10 @@ class _CroppedPageState extends State<_CroppedPage> {
     _token = token;
 
     final crop = widget.crop;
-    final pixelWidth = math.min(_maxPixelWidth, (widget.width * widget.devicePixelRatio).round());
+    final pixelWidth = math.min(
+      _maxPixelWidth,
+      (widget.width * widget.devicePixelRatio).round(),
+    );
     final scale = pixelWidth / crop.width;
     final fullWidth = widget.page.width * scale;
     final fullHeight = widget.page.height * scale;
@@ -474,7 +568,11 @@ class _CroppedPageState extends State<_CroppedPage> {
       height: widget.height,
       child: image == null
           ? ColoredBox(color: widget.backgroundColor)
-          : RawImage(image: image, fit: BoxFit.fill, filterQuality: FilterQuality.medium),
+          : RawImage(
+              image: image,
+              fit: BoxFit.fill,
+              filterQuality: FilterQuality.medium,
+            ),
     );
   }
 }
