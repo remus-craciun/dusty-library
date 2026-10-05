@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:dusty_library/core/server_config.dart';
 import 'package:dusty_library/data/models.dart';
 import 'package:dusty_library/features/library/library_providers.dart';
@@ -62,6 +64,26 @@ void main() {
   });
 
   group('reading position', () {
+    test(
+      'the page at the top of the screen is not a fraction of the scroll',
+      () {
+        // A tall first page, then short ones. Halfway down the document is
+        // still an early page, not the middle page number.
+        final pages = [
+          const Rect.fromLTWH(0, 0, 100, 1000),
+          for (var i = 0; i < 10; i++)
+            Rect.fromLTWH(0, 1000 + i * 100, 100, 100),
+        ];
+        expect(
+          pageAtTop(
+            visibleRect: const Rect.fromLTWH(0, 1000, 100, 200),
+            pageRects: pages,
+          ),
+          2,
+        );
+      },
+    );
+
     test('spot is the fraction down the page under the viewport top', () {
       final spot = readingSpot(
         viewportTop: 250,
@@ -82,13 +104,81 @@ void main() {
 
     test('focus mode round-trips a spot through the cropped view', () {
       final pages = [
-        const FocusPage(viewTop: 0, viewHeight: 1000, cropTop: 100, cropHeight: 400, pageHeight: 800),
+        const FocusPage(
+          viewTop: 0,
+          viewHeight: 1000,
+          cropTop: 100,
+          cropHeight: 400,
+          pageHeight: 800,
+        ),
       ];
       const spot = ReadingSpot(1, 0.5);
       final scroll = focusScrollOffset(spot: spot, pages: pages);
       final back = focusReadingSpot(scrollTop: scroll, pages: pages);
       expect(back.page, 1);
       expect(back.offset, closeTo(0.5, 0.0001));
+    });
+
+    test('the first focus window is the open page and five around it', () {
+      expect(focusMeasureWindow(page: 603, pageCount: 700), (597, 608));
+      expect(focusMeasureWindow(page: 1, pageCount: 700), (0, 6));
+      expect(focusMeasureWindow(page: 3, pageCount: 4), (0, 4));
+    });
+
+    test('pages added above the opening page do not move it', () {
+      const anchor = FocusPage(
+        viewTop: 0,
+        viewHeight: 200,
+        cropTop: 0,
+        cropHeight: 200,
+        pageHeight: 200,
+      );
+      const next = FocusPage(
+        viewTop: 200,
+        viewHeight: 200,
+        cropTop: 0,
+        cropHeight: 200,
+        pageHeight: 200,
+      );
+      const above = FocusPage(
+        viewTop: 0,
+        viewHeight: 100,
+        cropTop: 0,
+        cropHeight: 100,
+        pageHeight: 100,
+      );
+      final fromAnchor = [anchor, next];
+      const spot = ReadingSpot(10, 0.25);
+      final before = focusAnchorScrollOffset(
+        spot: spot,
+        anchorPage: 10,
+        before: const [],
+        fromAnchor: fromAnchor,
+      );
+      final after = focusAnchorScrollOffset(
+        spot: spot,
+        anchorPage: 10,
+        before: const [above],
+        fromAnchor: fromAnchor,
+      );
+      expect(before, 50);
+      expect(after, before);
+
+      final aboveSpot = focusAnchorScrollOffset(
+        spot: const ReadingSpot(9, 0),
+        anchorPage: 10,
+        before: const [above],
+        fromAnchor: fromAnchor,
+      );
+      expect(aboveSpot, -100);
+      final back = focusAnchorReadingSpot(
+        scrollOffset: aboveSpot,
+        anchorPage: 10,
+        before: const [above],
+        fromAnchor: fromAnchor,
+      );
+      expect(back.page, 9);
+      expect(back.offset, closeTo(0, 0.0001));
     });
   });
 
@@ -108,9 +198,18 @@ void main() {
     });
 
     test('normalizeServerUrl accepts hosts, ports and schemes', () {
-      expect(normalizeServerUrl('192.168.1.10:8080'), 'http://192.168.1.10:8080');
-      expect(normalizeServerUrl('https://books.example.com/'), 'https://books.example.com');
-      expect(normalizeServerUrl('http://host:8080/some/path?x=1'), 'http://host:8080');
+      expect(
+        normalizeServerUrl('192.168.1.10:8080'),
+        'http://192.168.1.10:8080',
+      );
+      expect(
+        normalizeServerUrl('https://books.example.com/'),
+        'https://books.example.com',
+      );
+      expect(
+        normalizeServerUrl('http://host:8080/some/path?x=1'),
+        'http://host:8080',
+      );
       expect(normalizeServerUrl(''), isNull);
       expect(normalizeServerUrl('ftp://x'), isNull);
     });

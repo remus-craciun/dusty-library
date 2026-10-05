@@ -4,7 +4,8 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show ScrollCacheExtent;
+import 'package:flutter/rendering.dart'
+    show ItemExtentBuilder, ScrollCacheExtent;
 import 'package:pdfrx/pdfrx.dart';
 
 import 'reading_position.dart';
@@ -15,6 +16,10 @@ class FocusReaderController {
   Future<void> Function(int pageNumber)? _goTo;
   Future<void> Function(int direction)? _turn;
   void Function(double delta)? _scrollBy;
+  ReadingSpot? Function()? _spot;
+
+  /// Where the top of the focus view is, if it has been laid out.
+  ReadingSpot? get spot => _spot?.call();
 
   Future<void> goToPage(int pageNumber) async => _goTo?.call(pageNumber);
 
@@ -29,10 +34,10 @@ class FocusReaderController {
 /// paragraphs span the full width of the screen, with the blank page margins
 /// removed. Pages flow vertically with no gaps, like one long sheet.
 ///
-/// The horizontal crop is shared by the whole document (a robust percentile of
-/// the text edges across pages) so the text size stays constant from page to
-/// page; only the vertical trim is per page. Pages without any text (scans,
-/// full-page figures) are shown whole.
+/// The text column is taken from the open page and a few pages around it, so
+/// that page can appear before the rest of the book is measured. Later pages
+/// keep that same column. Pages without any text (scans, full-page figures)
+/// are shown whole.
 class FocusReader extends StatefulWidget {
   const FocusReader({
     super.key,
@@ -43,6 +48,7 @@ class FocusReader extends StatefulWidget {
     required this.backgroundColor,
     required this.onReady,
     required this.onPositionChanged,
+    this.onPositioned,
     required this.onTap,
     this.onWord,
     this.controller,
@@ -58,6 +64,9 @@ class FocusReader extends StatefulWidget {
   final ValueChanged<int> onReady;
   final void Function(int page, double pageOffset) onPositionChanged;
 
+  /// Called after the opening scroll has moved to [initialPage].
+  final VoidCallback? onPositioned;
+
   /// A tap on the page, with the position and size of the reader.
   final void Function(Offset localPosition, Size viewSize) onTap;
 
@@ -70,32 +79,60 @@ class FocusReader extends StatefulWidget {
 }
 
 class _FocusReaderState extends State<FocusReader> {
+  static const _anchorKey = ValueKey('focus-anchor');
+  static const _batch = 5;
+
   PdfDocument? _doc;
   _FocusLayout? _layout;
   Object? _error;
-  int _measured = 0;
+  bool _ready = false;
+  bool _closed = false;
   int _total = 0;
+  int _anchorPage = 1;
 
-  final _scroll = ScrollController();
+  /// Created once the nearby pages are measured, aimed at the open page.
+  /// That page is the scroll view's zero point, so pages measured later above
+  /// it do not push it down the screen.
+  ScrollController? _scroll;
   double _layoutWidth = 0;
-  List<double> _heights = const [];
-  List<double> _offsets = const []; // cumulative, length = pages + 1
+  int _laidOutStart = -1;
+  int _laidOutEnd = -1;
+  List<double> _beforeHeights = const [];
+  List<double> _afterHeights = const [];
+  double _beforeExtent = 0;
+  double _afterExtent = 0;
+  List<FocusPage> _beforeFocus = const [];
+  List<FocusPage> _afterFocus = const [];
+  ItemExtentBuilder? _beforeExtentBuilder;
+  ItemExtentBuilder? _afterExtentBuilder;
   int _page = 1;
   double _pageOffset = 0;
-  bool _initialJumpDone = false;
+  int _jumpAttempts = 0;
+  int _backgroundToken = 0;
+  int? _priorityIndex;
+  final _waiters = <int, List<Completer<void>>>{};
 
   /// Ignores scroll events while a programmatic jump is in flight, so opening
   /// a book does not overwrite the saved spot with the top of the first page.
   bool _suppress = true;
   final _pageText = <int, PdfPageText>{};
 
+  int get _anchorIndex => _anchorPage - 1;
+
+  String get _cacheKey => '${widget.sourceName}:${widget.bytes.length}';
+
   @override
   void initState() {
     super.initState();
+    // Kept from the first frame. Measuring the nearby pages takes a moment,
+    // and a later rebuild must not retarget the jump.
+    _page = widget.initialPage < 1 ? 1 : widget.initialPage;
+    _pageOffset = widget.initialPageOffset.clamp(0.0, 1.0);
+    _anchorPage = _page;
     widget.controller?._goTo = _goToPage;
     widget.controller?._turn = _turn;
     widget.controller?._scrollBy = _scrollBy;
-    _scroll.addListener(_onScroll);
+    widget.controller?._spot = _currentSpot;
     _open();
   }
 
@@ -106,18 +143,25 @@ class _FocusReaderState extends State<FocusReader> {
       old.controller?._goTo = null;
       old.controller?._turn = null;
       old.controller?._scrollBy = null;
+      old.controller?._spot = null;
       widget.controller?._goTo = _goToPage;
       widget.controller?._turn = _turn;
       widget.controller?._scrollBy = _scrollBy;
+      widget.controller?._spot = _currentSpot;
     }
   }
 
   @override
   void dispose() {
+    _closed = true;
+    _backgroundToken++;
+    _cancelWaiters();
     widget.controller?._goTo = null;
     widget.controller?._turn = null;
     widget.controller?._scrollBy = null;
-    _scroll.dispose();
+    widget.controller?._spot = null;
+    _scroll?.removeListener(_onScroll);
+    _scroll?.dispose();
     _doc?.dispose();
     super.dispose();
   }
@@ -128,58 +172,295 @@ class _FocusReaderState extends State<FocusReader> {
         widget.bytes,
         sourceName: widget.sourceName,
       );
-      if (!mounted) {
+      if (!mounted || _closed) {
         doc.dispose();
         return;
       }
       _doc = doc;
       _total = doc.pages.length;
-      final layout = await _FocusLayout.measure(
-        doc,
-        cacheKey: '${widget.sourceName}:${widget.bytes.length}',
-        onProgress: (n) {
-          if (mounted) setState(() => _measured = n);
-        },
-      );
-      if (!mounted) return;
-      _page = widget.initialPage.clamp(1, _total);
-      _pageOffset = widget.initialPageOffset.clamp(0.0, 1.0);
-      setState(() => _layout = layout);
+      if (_total == 0) {
+        setState(() => _error = 'This PDF has no pages.');
+        return;
+      }
+      _page = _page.clamp(1, _total);
+      _pageOffset = _pageOffset.clamp(0.0, 1.0);
+      _anchorPage = _page;
       widget.onReady(_total);
+
+      final cached = _FocusLayout.cache[_cacheKey];
+      if (cached != null && cached.pageCount == _total && cached.isComplete) {
+        _layout = cached;
+        if (!mounted || _closed) return;
+        setState(() => _ready = true);
+        return;
+      }
+
+      _layout = _FocusLayout(_total);
+      final (start, end) = focusMeasureWindow(page: _page, pageCount: _total);
+      await _measureBounds(start, end);
+      if (!mounted || _closed) return;
+      _layout!.lockColumn(doc.pages, start: start, end: end);
+      _layout!.measuredStart = start;
+      _layout!.measuredEnd = end;
+      setState(() => _ready = true);
+      unawaited(_measureRest());
     } catch (e) {
-      if (mounted) setState(() => _error = e);
+      if (mounted && !_closed) setState(() => _error = e);
     }
+  }
+
+  /// Measures text bounds for [start, end), then crops them once the column
+  /// is known. Yields between pages so the open page stays responsive.
+  Future<void> _measureBounds(int start, int end) async {
+    final doc = _doc;
+    final layout = _layout;
+    if (doc == null || layout == null) return;
+    for (var i = start; i < end; i++) {
+      if (!mounted || _closed) return;
+      if (layout.bounds[i] == null) {
+        try {
+          layout.bounds[i] = await _FocusLayout.textBounds(doc.pages[i]);
+        } catch (_) {
+          return;
+        }
+      }
+      if (!mounted || _closed) return;
+      if (layout.columnLocked && layout.crops[i] == null) {
+        layout.crops[i] = layout.cropFor(doc.pages[i], layout.bounds[i]);
+      }
+      await Future<void>.delayed(Duration.zero);
+    }
+  }
+
+  Future<void> _expandTo(int start, int end) async {
+    await _measureBounds(start, end);
+    final layout = _layout;
+    if (!mounted || _closed || layout == null || layout.measuredStart == null) {
+      return;
+    }
+    var coveredStart = start;
+    var coveredEnd = end;
+    while (coveredStart < coveredEnd && layout.crops[coveredStart] == null) {
+      coveredStart++;
+    }
+    while (coveredEnd > coveredStart && layout.crops[coveredEnd - 1] == null) {
+      coveredEnd--;
+    }
+    if (coveredStart >= coveredEnd) return;
+    if (coveredEnd < layout.measuredStart! ||
+        coveredStart > layout.measuredEnd!) {
+      return;
+    }
+    layout.measuredStart = math.min(layout.measuredStart!, coveredStart);
+    layout.measuredEnd = math.max(layout.measuredEnd!, coveredEnd);
+  }
+
+  Future<void> _measureRest() async {
+    final token = ++_backgroundToken;
+    while (mounted && !_closed && token == _backgroundToken) {
+      final layout = _layout;
+      if (layout == null || layout.measuredStart == null) return;
+      if (layout.isComplete && _priorityIndex == null) {
+        _FocusLayout.cache[_cacheKey] = layout;
+        _releaseWaiters();
+        return;
+      }
+      try {
+        final priority = _priorityIndex;
+        if (priority != null && !layout.containsIndex(priority)) {
+          if (priority >= layout.measuredEnd!) {
+            final next = math.min(
+              layout.pageCount,
+              layout.measuredEnd! + _batch,
+            );
+            await _expandTo(layout.measuredEnd!, next);
+          } else {
+            final next = math.max(0, layout.measuredStart! - _batch);
+            await _expandTo(next, layout.measuredStart!);
+          }
+        } else {
+          _priorityIndex = null;
+          if (layout.measuredEnd! < layout.pageCount) {
+            final next = math.min(
+              layout.pageCount,
+              layout.measuredEnd! + _batch,
+            );
+            await _expandTo(layout.measuredEnd!, next);
+          } else if (layout.measuredStart! > 0) {
+            final next = math.max(0, layout.measuredStart! - _batch);
+            await _expandTo(next, layout.measuredStart!);
+          }
+        }
+      } catch (_) {
+        _cancelWaiters();
+        return;
+      }
+      if (!mounted || _closed || token != _backgroundToken) return;
+      setState(() {});
+      _scheduleRelease();
+    }
+  }
+
+  void _scheduleRelease() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && !_closed) _releaseWaiters();
+    });
+  }
+
+  void _cancelWaiters() {
+    for (final pending in _waiters.values) {
+      for (final waiter in pending) {
+        if (!waiter.isCompleted) waiter.complete();
+      }
+    }
+    _waiters.clear();
+  }
+
+  void _releaseWaiters() {
+    final layout = _layout;
+    if (layout == null) return;
+    final done = <int>[];
+    for (final index in _waiters.keys) {
+      if (layout.containsIndex(index)) done.add(index);
+    }
+    for (final index in done) {
+      for (final waiter in _waiters.remove(index)!) {
+        if (!waiter.isCompleted) waiter.complete();
+      }
+    }
+  }
+
+  Future<void> _untilMeasured(int index) async {
+    final layout = _layout;
+    if (layout != null && layout.containsIndex(index)) return;
+    final waiter = Completer<void>();
+    (_waiters[index] ??= []).add(waiter);
+    _priorityIndex = index;
+    await waiter.future;
   }
 
   // --- geometry -----------------------------------------------------------
 
-  void _relayout(double width) {
-    final layout = _layout!;
-    _layoutWidth = width;
-    _heights = [for (final c in layout.crops) c.height * (width / c.width)];
-    final offsets = List<double>.filled(_heights.length + 1, 0);
-    for (var i = 0; i < _heights.length; i++) {
-      offsets[i + 1] = offsets[i] + _heights[i];
-    }
-    _offsets = offsets;
+  double _viewHeight(Rect crop, PdfPage page, double width) {
+    final cropWidth = crop.width <= 0 ? page.width : crop.width;
+    if (cropWidth <= 0 || width <= 0) return 1;
+    return crop.height * (width / cropWidth);
   }
 
-  List<FocusPage> get _focusPages => focusPages(
-    crops: _layout!.crops,
-    pageHeights: [for (final p in _doc!.pages) p.height],
-    viewTops: _offsets.sublist(0, _heights.length),
-    viewHeights: _heights,
-  );
+  List<FocusPage> _focusSlice(int startIndex, List<double> heights) {
+    final layout = _layout!;
+    final doc = _doc!;
+    var top = 0.0;
+    final pages = <FocusPage>[];
+    for (var i = 0; i < heights.length; i++) {
+      final crop = layout.crops[startIndex + i]!;
+      final page = doc.pages[startIndex + i];
+      pages.add(
+        FocusPage(
+          viewTop: top,
+          viewHeight: heights[i],
+          cropTop: crop.top,
+          cropHeight: crop.height,
+          pageHeight: page.height,
+        ),
+      );
+      top += heights[i];
+    }
+    return pages;
+  }
+
+  void _relayout(double width) {
+    final layout = _layout!;
+    final doc = _doc!;
+    final start = layout.measuredStart!;
+    final end = layout.measuredEnd!;
+    _layoutWidth = width;
+    _laidOutStart = start;
+    _laidOutEnd = end;
+    _beforeHeights = [
+      for (var i = start; i < _anchorIndex; i++)
+        _viewHeight(layout.crops[i]!, doc.pages[i], width),
+    ];
+    _afterHeights = [
+      for (var i = _anchorIndex; i < end; i++)
+        _viewHeight(layout.crops[i]!, doc.pages[i], width),
+    ];
+    _beforeExtent = _beforeHeights.fold(0.0, (sum, height) => sum + height);
+    _afterExtent = _afterHeights.fold(0.0, (sum, height) => sum + height);
+    _beforeFocus = _focusSlice(start, _beforeHeights);
+    _afterFocus = _focusSlice(_anchorIndex, _afterHeights);
+    final before = _beforeHeights;
+    final after = _afterHeights;
+    _beforeExtentBuilder = (index, _) {
+      if (index < 0 || index >= before.length) return null;
+      // Child 0 sits against the open page. Later children are further up.
+      return before[before.length - 1 - index];
+    };
+    _afterExtentBuilder = (index, _) {
+      if (index < 0 || index >= after.length) return null;
+      return after[index];
+    };
+  }
+
+  void _syncLayout(double width) {
+    final widthChanged = _layoutWidth != 0 && width != _layoutWidth;
+    final first = _scroll == null;
+    _relayout(width);
+    if (first) {
+      _scroll = ScrollController(initialScrollOffset: _targetOffset());
+      _scroll!.addListener(_onScroll);
+    }
+    if (first || widthChanged) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _jumpToSavedSpot();
+      });
+    }
+  }
+
+  double _targetOffset() {
+    if (_afterFocus.isEmpty) return 0;
+    return focusAnchorScrollOffset(
+      spot: ReadingSpot(_page, _pageOffset),
+      anchorPage: _anchorPage,
+      before: _beforeFocus,
+      fromAnchor: _afterFocus,
+    );
+  }
+
+  double _minOffset() => -_beforeExtent;
+
+  double _maxOffset(ScrollPosition position) {
+    final viewport = position.viewportDimension;
+    if (viewport <= 0) return position.maxScrollExtent;
+    return math.max(0.0, _afterExtent - viewport);
+  }
+
+  double _clampOffset(double target, ScrollPosition position) {
+    return target.clamp(_minOffset(), _maxOffset(position)).toDouble();
+  }
 
   void _onScroll() {
-    if (_suppress || _heights.isEmpty || !_scroll.hasClients) return;
-    final pos = _scroll.position;
+    final scroll = _scroll;
+    if (_suppress ||
+        _afterFocus.isEmpty ||
+        scroll == null ||
+        !scroll.hasClients) {
+      return;
+    }
+    final pos = scroll.position;
     final ReadingSpot spot;
-    if (pos.pixels >= pos.maxScrollExtent - 1) {
-      // The end of the book is on screen: remember the bottom of the last page.
-      spot = ReadingSpot(_heights.length, 1);
+    final atEnd =
+        _layout?.isComplete == true && pos.pixels >= _maxOffset(pos) - 1;
+    if (atEnd) {
+      spot = ReadingSpot(_total, 1);
     } else {
-      spot = focusReadingSpot(scrollTop: pos.pixels, pages: _focusPages);
+      spot = focusAnchorReadingSpot(
+        scrollOffset: pos.pixels,
+        anchorPage: _anchorPage,
+        before: _beforeFocus,
+        fromAnchor: _afterFocus,
+      );
     }
     _page = spot.page;
     _pageOffset = spot.offset;
@@ -187,19 +468,21 @@ class _FocusReaderState extends State<FocusReader> {
   }
 
   void _scrollBy(double delta) {
-    if (!_scroll.hasClients || delta == 0) return;
-    final pos = _scroll.position;
-    _scroll.jumpTo((pos.pixels + delta).clamp(0.0, pos.maxScrollExtent));
+    final scroll = _scroll;
+    if (scroll == null || !scroll.hasClients || delta == 0) return;
+    final pos = scroll.position;
+    scroll.jumpTo(_clampOffset(pos.pixels + delta, pos));
   }
 
   Future<void> _turn(int direction) async {
-    if (!_scroll.hasClients || direction == 0) return;
-    final pos = _scroll.position;
-    final target = (pos.pixels + direction * pos.viewportDimension).clamp(
-      0.0,
-      pos.maxScrollExtent,
+    final scroll = _scroll;
+    if (scroll == null || !scroll.hasClients || direction == 0) return;
+    final pos = scroll.position;
+    final target = _clampOffset(
+      pos.pixels + direction * pos.viewportDimension,
+      pos,
     );
-    await _scroll.animateTo(
+    await scroll.animateTo(
       target,
       duration: const Duration(milliseconds: 220),
       curve: Curves.easeOutCubic,
@@ -207,29 +490,70 @@ class _FocusReaderState extends State<FocusReader> {
   }
 
   Future<void> _goToPage(int pageNumber) async {
-    if (_offsets.isEmpty || !_scroll.hasClients) return;
-    final idx = (pageNumber - 1).clamp(0, _heights.length - 1);
-    final target = _offsets[idx].clamp(0.0, _scroll.position.maxScrollExtent);
-    await _scroll.animateTo(
-      target,
+    final scroll = _scroll;
+    if (scroll == null || !scroll.hasClients || _total == 0) return;
+    final index = (pageNumber - 1).clamp(0, _total - 1);
+    if (_layout?.containsIndex(index) != true) {
+      await _untilMeasured(index);
+    }
+    if (!mounted || _closed || !scroll.hasClients) return;
+    await scroll.animateTo(
+      _clampOffset(_targetOffsetFor(index + 1, 0), scroll.position),
       duration: const Duration(milliseconds: 250),
       curve: Curves.easeOutCubic,
     );
   }
 
+  double _targetOffsetFor(int page, double offset) {
+    return focusAnchorScrollOffset(
+      spot: ReadingSpot(page, offset),
+      anchorPage: _anchorPage,
+      before: _beforeFocus,
+      fromAnchor: _afterFocus,
+    );
+  }
+
+  ReadingSpot? _currentSpot() {
+    final scroll = _scroll;
+    if (scroll == null || !scroll.hasClients || _afterFocus.isEmpty) {
+      return null;
+    }
+    return focusAnchorReadingSpot(
+      scrollOffset: scroll.offset,
+      anchorPage: _anchorPage,
+      before: _beforeFocus,
+      fromAnchor: _afterFocus,
+    );
+  }
+
   void _jumpToSavedSpot() {
-    if (!_scroll.hasClients) {
-      _suppress = false;
+    if (!mounted) return;
+    final scroll = _scroll;
+    if (scroll == null || !scroll.hasClients || _afterFocus.isEmpty) {
+      _retryJump();
       return;
     }
-    final pages = _focusPages;
-    final target = focusScrollOffset(
-      spot: ReadingSpot(_page, _pageOffset),
-      pages: pages,
-    );
+    if (scroll.position.viewportDimension <= 0) {
+      _retryJump();
+      return;
+    }
     _suppress = true;
-    _scroll.jumpTo(target.clamp(0.0, _scroll.position.maxScrollExtent));
+    scroll.jumpTo(_clampOffset(_targetOffset(), scroll.position));
     _suppress = false;
+    _jumpAttempts = 0;
+    widget.onPositioned?.call();
+  }
+
+  void _retryJump() {
+    if (_jumpAttempts >= 60) {
+      _suppress = false;
+      widget.onPositioned?.call();
+      return;
+    }
+    _jumpAttempts++;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _jumpToSavedSpot();
+    });
   }
 
   Future<void> _onLongPress(Offset local) async {
@@ -242,41 +566,77 @@ class _FocusReaderState extends State<FocusReader> {
   Future<String?> _wordAt(Offset local) async {
     final doc = _doc;
     final layout = _layout;
+    final scroll = _scroll;
     if (doc == null ||
         layout == null ||
-        !_scroll.hasClients ||
-        _heights.isEmpty) {
+        scroll == null ||
+        !scroll.hasClients ||
+        _afterHeights.isEmpty) {
       return null;
     }
-    final contentY = _scroll.offset + local.dy;
-    var index = _heights.length - 1;
-    for (var i = 0; i < _heights.length; i++) {
-      if (contentY < _offsets[i] + _heights[i]) {
-        index = i;
-        break;
-      }
-    }
-    final page = doc.pages[index];
+    final hit = _hitPage(scroll.offset + local.dy);
+    if (hit == null) return null;
+    final (index, yInPage, height) = hit;
     final crop = layout.crops[index];
-    final height = _heights[index];
-    if (crop.width <= 0 || height <= 0 || _layoutWidth <= 0) return null;
-    final yInPage = contentY - _offsets[index];
+    if (crop == null || crop.width <= 0 || height <= 0 || _layoutWidth <= 0) {
+      return null;
+    }
     final point = Offset(
       crop.left + (local.dx / _layoutWidth) * crop.width,
       crop.top + (yInPage / height) * crop.height,
     );
     try {
-      final text = _pageText[index] ??= await page.loadStructuredText();
+      final text = _pageText[index] ??= await doc.pages[index]
+          .loadStructuredText();
       if (!mounted) return null;
       final rects = [
-        for (final rect in text.charRects) rect.toRect(page: page),
+        for (final rect in text.charRects) rect.toRect(page: doc.pages[index]),
       ];
-      final hit = charIndexAt(rects, point);
-      if (hit == null) return null;
-      return wordAtIndex(text.fullText, hit);
+      final glyph = charIndexAt(rects, point);
+      if (glyph == null) return null;
+      return wordAtIndex(text.fullText, glyph);
     } catch (_) {
       return null;
     }
+  }
+
+  (int, double, double)? _hitPage(double contentY) {
+    if (contentY >= 0) {
+      var y = contentY;
+      for (var i = 0; i < _afterHeights.length; i++) {
+        final height = _afterHeights[i];
+        if (y < height) return (_anchorIndex + i, y, height);
+        y -= height;
+      }
+      if (_afterHeights.isEmpty) return null;
+      final last = _afterHeights.length - 1;
+      return (_anchorIndex + last, _afterHeights[last], _afterHeights[last]);
+    }
+    final start = _layout?.measuredStart;
+    if (start == null) return null;
+    var remain = -contentY;
+    for (var i = _anchorIndex - 1; i >= start; i--) {
+      final height = _beforeHeights[i - start];
+      if (remain <= height) return (i, height - remain, height);
+      remain -= height;
+    }
+    return null;
+  }
+
+  Widget _tile(int pageIndex, double devicePixelRatio) {
+    final crop = _layout!.crops[pageIndex]!;
+    final height = pageIndex < _anchorIndex
+        ? _beforeHeights[pageIndex - _layout!.measuredStart!]
+        : _afterHeights[pageIndex - _anchorIndex];
+    return _CroppedPage(
+      key: ValueKey(pageIndex),
+      page: _doc!.pages[pageIndex],
+      crop: crop,
+      width: _layoutWidth,
+      height: height,
+      devicePixelRatio: devicePixelRatio,
+      backgroundColor: widget.backgroundColor,
+    );
   }
 
   // --- build --------------------------------------------------------------
@@ -287,16 +647,14 @@ class _FocusReaderState extends State<FocusReader> {
       return Center(child: Text('Could not render PDF: $_error'));
     }
     final layout = _layout;
-    if (layout == null) {
-      return Center(
+    if (!_ready || layout == null || layout.measuredStart == null) {
+      return const Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 12),
-            Text(
-              _total > 0 ? 'Measuring pages $_measured / $_total' : 'Opening…',
-            ),
+            CircularProgressIndicator(),
+            SizedBox(height: 12),
+            Text('Opening…'),
           ],
         ),
       );
@@ -305,17 +663,18 @@ class _FocusReaderState extends State<FocusReader> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
-        if (width != _layoutWidth) {
-          final widthChanged = _layoutWidth != 0;
-          _relayout(width);
-          if (!_initialJumpDone || widthChanged) {
-            // Position after the list has laid out with the new extents.
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (!mounted) return;
-              _initialJumpDone = true;
-              _jumpToSavedSpot();
-            });
-          }
+        if (!width.isFinite || width <= 0) return const SizedBox.shrink();
+        final rangeChanged =
+            layout.measuredStart != _laidOutStart ||
+            layout.measuredEnd != _laidOutEnd;
+        if (_scroll == null || width != _layoutWidth || rangeChanged) {
+          _syncLayout(width);
+        }
+        final scroll = _scroll;
+        final beforeBuilder = _beforeExtentBuilder;
+        final afterBuilder = _afterExtentBuilder;
+        if (scroll == null || beforeBuilder == null || afterBuilder == null) {
+          return const SizedBox.shrink();
         }
         final dpr = MediaQuery.devicePixelRatioOf(context);
         return GestureDetector(
@@ -329,21 +688,31 @@ class _FocusReaderState extends State<FocusReader> {
               : (details) => _onLongPress(details.localPosition),
           child: ColoredBox(
             color: widget.backgroundColor,
-            child: ListView.builder(
-              controller: _scroll,
-              padding: EdgeInsets.zero,
-              itemCount: _heights.length,
-              itemExtentBuilder: (i, _) => _heights[i],
+            child: CustomScrollView(
+              controller: scroll,
+              center: _anchorKey,
               scrollCacheExtent: const ScrollCacheExtent.viewport(1),
-              itemBuilder: (context, i) => _CroppedPage(
-                key: ValueKey(i),
-                page: _doc!.pages[i],
-                crop: layout.crops[i],
-                width: width,
-                height: _heights[i],
-                devicePixelRatio: dpr,
-                backgroundColor: widget.backgroundColor,
-              ),
+              slivers: [
+                SliverVariedExtentList(
+                  itemExtentBuilder: beforeBuilder,
+                  delegate: ExactScrollExtentDelegate(
+                    itemCount: _beforeHeights.length,
+                    contentExtent: _beforeExtent,
+                    builder: (context, index) =>
+                        _tile(_anchorIndex - 1 - index, dpr),
+                  ),
+                ),
+                SliverVariedExtentList(
+                  key: _anchorKey,
+                  itemExtentBuilder: afterBuilder,
+                  delegate: ExactScrollExtentDelegate(
+                    itemCount: _afterHeights.length,
+                    contentExtent: _afterExtent,
+                    builder: (context, index) =>
+                        _tile(_anchorIndex + index, dpr),
+                  ),
+                ),
+              ],
             ),
           ),
         );
@@ -353,73 +722,71 @@ class _FocusReaderState extends State<FocusReader> {
 }
 
 /// Per-page crop rectangles (Flutter coordinates, PDF points).
+///
+/// The text column is fixed from the first measured window. Pages measured
+/// afterwards reuse it, so the open page does not change width while the rest
+/// of the book is prepared.
 class _FocusLayout {
-  const _FocusLayout(this.crops);
-  final List<Rect> crops;
+  _FocusLayout(this.pageCount)
+    : crops = List<Rect?>.filled(pageCount, null),
+      bounds = List<Rect?>.filled(pageCount, null);
 
-  /// Crops are independent of the screen, so remember them per book for the
-  /// lifetime of the app: re-opening a book in focus mode is then instant.
-  static final _cache = <String, _FocusLayout>{};
+  /// A finished book stays ready for the rest of the session.
+  static final cache = <String, _FocusLayout>{};
 
-  static const _padX = 3.0; // points kept around the text, horizontally
-  static const _padY = 8.0; // and vertically
+  static const _padX = 3.0;
+  static const _padY = 8.0;
 
-  static Future<_FocusLayout> measure(
-    PdfDocument doc, {
-    required String cacheKey,
-    required ValueChanged<int> onProgress,
-  }) async {
-    final cached = _cache[cacheKey];
-    if (cached != null && cached.crops.length == doc.pages.length) {
-      return cached;
-    }
+  final int pageCount;
+  final List<Rect?> crops;
+  final List<Rect?> bounds;
+  double? columnLeft;
+  double? columnRight;
+  bool columnLocked = false;
+  int? measuredStart;
+  int? measuredEnd;
 
-    final bounds = <Rect?>[];
-    for (var i = 0; i < doc.pages.length; i++) {
-      bounds.add(await _textBounds(doc.pages[i]));
-      onProgress(i + 1);
-    }
+  bool get isComplete => measuredStart == 0 && measuredEnd == pageCount;
 
-    // Document-wide text column: robust percentiles so a lone wide table or a
-    // title page does not dictate the crop for the whole book.
-    final lefts = <double>[], rights = <double>[];
-    for (final b in bounds) {
-      if (b != null) {
-        lefts.add(b.left);
-        rights.add(b.right);
+  bool containsIndex(int index) =>
+      measuredStart != null && index >= measuredStart! && index < measuredEnd!;
+
+  void lockColumn(List<PdfPage> pages, {required int start, required int end}) {
+    final lefts = <double>[];
+    final rights = <double>[];
+    for (var i = start; i < end; i++) {
+      final box = bounds[i];
+      if (box != null) {
+        lefts.add(box.left);
+        rights.add(box.right);
       }
     }
-    final crops = <Rect>[];
-    if (lefts.isEmpty) {
-      for (final p in doc.pages) {
-        crops.add(Rect.fromLTWH(0, 0, p.width, p.height));
-      }
-    } else {
+    if (lefts.isNotEmpty) {
       lefts.sort();
       rights.sort();
-      final colLeft = _percentile(lefts, 0.05) - _padX;
-      final colRight = _percentile(rights, 0.95) + _padX;
-      for (var i = 0; i < doc.pages.length; i++) {
-        final p = doc.pages[i];
-        final b = bounds[i];
-        if (b == null) {
-          crops.add(Rect.fromLTWH(0, 0, p.width, p.height));
-          continue;
-        }
-        final left = math.max(0.0, colLeft);
-        final right = math.min(p.width, colRight);
-        final top = math.max(0.0, b.top - _padY);
-        final bottom = math.min(p.height, b.bottom + _padY);
-        if (right - left < 8 || bottom - top < 8) {
-          crops.add(Rect.fromLTWH(0, 0, p.width, p.height));
-        } else {
-          crops.add(Rect.fromLTRB(left, top, right, bottom));
-        }
-      }
+      columnLeft = _percentile(lefts, 0.05) - _padX;
+      columnRight = _percentile(rights, 0.95) + _padX;
     }
-    final layout = _FocusLayout(List.unmodifiable(crops));
-    _cache[cacheKey] = layout;
-    return layout;
+    columnLocked = true;
+    for (var i = start; i < end; i++) {
+      crops[i] = cropFor(pages[i], bounds[i]);
+    }
+  }
+
+  Rect cropFor(PdfPage page, Rect? box) {
+    final leftEdge = columnLeft;
+    final rightEdge = columnRight;
+    if (box == null || leftEdge == null || rightEdge == null) {
+      return Rect.fromLTWH(0, 0, page.width, page.height);
+    }
+    final left = math.max(0.0, leftEdge);
+    final right = math.min(page.width, rightEdge);
+    final top = math.max(0.0, box.top - _padY);
+    final bottom = math.min(page.height, box.bottom + _padY);
+    if (right - left < 8 || bottom - top < 8) {
+      return Rect.fromLTWH(0, 0, page.width, page.height);
+    }
+    return Rect.fromLTRB(left, top, right, bottom);
   }
 
   static double _percentile(List<double> sorted, double q) {
@@ -429,7 +796,7 @@ class _FocusLayout {
 
   /// Union of the glyph boxes on [page] in Flutter coordinates, or null when
   /// the page has no (usable) text.
-  static Future<Rect?> _textBounds(PdfPage page) async {
+  static Future<Rect?> textBounds(PdfPage page) async {
     final PdfPageText text;
     try {
       text = await page.loadStructuredText();
@@ -461,6 +828,30 @@ class _FocusLayout {
     final rect = acc.toRect(page: page);
     return rect.isEmpty ? null : rect;
   }
+}
+
+/// Builder delegate that reports the real height of the whole list.
+///
+/// A plain builder estimates that height from the children on the first
+/// screen. When later pages are taller, the estimate runs out in the middle
+/// of the book and a jump to a later page is stopped there.
+class ExactScrollExtentDelegate extends SliverChildBuilderDelegate {
+  ExactScrollExtentDelegate({
+    required NullableIndexedWidgetBuilder builder,
+    required int itemCount,
+    required this.contentExtent,
+  }) : super(builder, childCount: itemCount);
+
+  /// Distance from the start of the first child to the end of the last one.
+  final double contentExtent;
+
+  @override
+  double? estimateMaxScrollOffset(
+    int firstIndex,
+    int lastIndex,
+    double leadingScrollOffset,
+    double trailingScrollOffset,
+  ) => contentExtent;
 }
 
 /// Renders one cropped page region to exactly [width] x [height] logical

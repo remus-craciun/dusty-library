@@ -2,27 +2,24 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/server_config.dart';
 
-/// Focus mode is a per-device preference (it depends on the screen you are
-/// holding, not on the account), so it lives in SharedPreferences rather than
-/// in the synced reader settings.
+/// Focus mode lasts only while this book is open. The next time a book is
+/// opened it starts off, even if it was on for the previous reading.
 class FocusModeNotifier extends Notifier<bool> {
-  static const _key = 'focus_mode';
-
   @override
-  bool build() => ref.read(sharedPrefsProvider).getBool(_key) ?? false;
+  bool build() => false;
 
-  Future<void> set(bool on) async {
-    state = on;
-    await ref.read(sharedPrefsProvider).setBool(_key, on);
-  }
+  void set(bool on) => state = on;
 
-  Future<void> toggle() => set(!state);
+  void toggle() => set(!state);
 }
 
-final focusModeProvider = NotifierProvider<FocusModeNotifier, bool>(FocusModeNotifier.new);
+/// Dropped when the reader closes, so the next book starts with focus mode off.
+final focusModeProvider = NotifierProvider.autoDispose<FocusModeNotifier, bool>(
+  FocusModeNotifier.new,
+);
 
 /// Tapping the left or right edge of the reader moves one screen back or
-/// forward. A per-device preference, like focus mode.
+/// forward. A per-device preference.
 class EdgeTapNotifier extends Notifier<bool> {
   static const _key = 'edge_tap';
 
@@ -35,4 +32,6 @@ class EdgeTapNotifier extends Notifier<bool> {
   }
 }
 
-final edgeTapProvider = NotifierProvider<EdgeTapNotifier, bool>(EdgeTapNotifier.new);
+final edgeTapProvider = NotifierProvider<EdgeTapNotifier, bool>(
+  EdgeTapNotifier.new,
+);

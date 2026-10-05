@@ -20,6 +20,12 @@ import 'reader_settings.dart';
 import 'reading_position.dart';
 import 'word_lookup.dart';
 
+/// Page at the top of the viewport. Kept stable so the viewer does not reload
+/// when the reader rebuilds.
+int? _viewerPageNumber(Rect visible, List<Rect> pages, PdfViewerController _) {
+  return pageAtTop(visibleRect: visible, pageRects: pages);
+}
+
 class ReaderScreen extends ConsumerStatefulWidget {
   const ReaderScreen({super.key, required this.bookId});
   final int bookId;
@@ -123,8 +129,10 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   // --- progress ------------------------------------------------------------
 
   void _onPageChanged(int? page) {
-    if (page == null || page == _page) return;
-    setState(() => _page = page);
+    // The page number is the one under the top of the screen, recorded by
+    // [_rememberPosition]. The viewer's own callback can disagree on a book
+    // whose pages differ in height, so it must not replace that spot.
+    if (page == null || !_acceptPosition) return;
     if (_pageCount > 0 && page >= _pageCount) _maybePromptCompletion();
   }
 
@@ -143,6 +151,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   }
 
   void _rememberPosition(int page, double offset) {
+    if (!_acceptPosition) return;
     final book = _book;
     // Restoring the saved spot nudges the viewer and reports that same spot.
     // Don't write it back: a newer position from another device must survive
@@ -164,6 +173,35 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     _saveTimer?.cancel();
     _saveTimer = Timer(const Duration(milliseconds: 800), _flushProgress);
     if (_pageCount > 0 && page >= _pageCount) _maybePromptCompletion();
+  }
+
+  /// The page at the top of focus mode, read while that view is still mounted.
+  void _takeSpotFromFocus() {
+    final spot = _focusController.spot;
+    if (spot == null) return;
+    _page = spot.page;
+    _pageOffset = spot.offset;
+  }
+
+  /// The page at the top of the normal viewer, read while that viewer is still
+  /// mounted. Focus mode opens from this, not from the viewer's page counter.
+  void _takeSpotFromViewer() {
+    if (!_controller.isReady) return;
+    final List<Rect> layouts;
+    final Rect visible;
+    try {
+      layouts = _controller.layout.pageLayouts;
+      visible = _controller.visibleRect;
+    } catch (_) {
+      return;
+    }
+    if (layouts.isEmpty) return;
+    final spot = readingSpot(
+      viewportTop: visible.top,
+      pages: [for (final r in layouts) PageSpan(r.top, r.height)],
+    );
+    _page = spot.page;
+    _pageOffset = spot.offset;
   }
 
   (int, double) _savedSpot(Book book) {
@@ -660,9 +698,12 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     ref.listen(focusModeProvider, (_, on) => _syncWakelock(on));
     if (_shownFocus != focus) {
       // The viewer that is about to mount starts at the top of a page.
-      // Ignore that until it has moved to the saved spot.
+      // Ignore that until it has moved to the saved spot. Take the spot from
+      // the viewer that is still on screen, before this build replaces it.
+      if (_shownFocus == true && !focus) _takeSpotFromFocus();
       _shownFocus = focus;
       _acceptPosition = false;
+      if (focus) _takeSpotFromViewer();
     }
 
     if (book == null) {
@@ -724,8 +765,10 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
             if (book.pageCount != count) {
               ref.read(libraryProvider.notifier).setPageCount(book, count);
             }
-            _acceptPosition = true;
-            if (mounted) setState(() => _page = savedPage.clamp(1, count));
+          },
+          onPositioned: () {
+            if (!mounted || _acceptPosition) return;
+            setState(() => _acceptPosition = true);
           },
           onPositionChanged: _rememberPosition,
           onTap: _onReaderTap,
@@ -754,7 +797,6 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                     .read(libraryProvider.notifier)
                     .setPageCount(book, _pageCount);
               }
-              if (mounted) setState(() => _page = controller.pageNumber);
               _restoreReadingSpot();
             },
             onViewSizeChanged: _onViewSizeChanged,
@@ -787,6 +829,9 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
               },
             ),
             pagePaintCallbacks: _findPaint,
+            // The viewer's own guess treats scroll distance as a page number,
+            // which walks off on a book whose pages differ in height.
+            calculateCurrentPageNumber: _viewerPageNumber,
             onPageChanged: _onPageChanged,
             customizeContextMenuItems: _addLookupMenuItems,
             onGeneralTap: (context, controller, details) {
