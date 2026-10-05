@@ -1,0 +1,8 @@
+.git
+data
+server/bin
+server/internal/web/dist
+app/build
+app/.dart_tool
+**/.dart_tool
+*.log

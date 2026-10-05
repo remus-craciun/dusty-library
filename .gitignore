@@ -1,0 +1,46 @@
+# --- Secrets / local config --------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Runtime data (SQLite DB, uploaded PDFs, JWT secret) ---------------------
+/data/
+/server/data/
+*.db
+*.db-wal
+*.db-shm
+
+# --- Go server ---------------------------------------------------------------
+/server/bin/
+/server/dist/
+/server/*.test
+/server/coverage.out
+# Flutter web build embedded into the binary; produced by `make web`.
+/server/internal/web/dist/*
+!/server/internal/web/dist/.gitkeep
+
+# --- Flutter app (app/.gitignore covers build/, .dart_tool/, etc.) ----------
+/app/build/
+/app/.dart_tool/
+/app/android/key.properties
+/app/android/*.jks
+/app/android/*.keystore
+/app/ios/Runner/GoogleService-Info.plist
+/app/android/app/google-services.json
+
+# --- Editors / OS ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+*.iml
+.vscode/*
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# --- Misc --------------------------------------------------------------------
+*.log
+tmp/

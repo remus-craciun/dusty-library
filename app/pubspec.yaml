@@ -1,0 +1,60 @@
+name: dusty_library
+description: "Dusty Library: a self-hosted PDF book reader."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.4
+
+dependencies:
+  file_picker: ^13.1.0
+  file_picker_web: ^4.0.0
+  flutter:
+    sdk: flutter
+  flutter_riverpod: ^3.4.3
+  flutter_secure_storage: ^11.2.0
+  flutter_web_plugins:
+    sdk: flutter
+  go_router: ^18.0.2
+  http: ^1.6.0
+  path_provider: ^2.1.6
+  pdfrx: ^2.6.5
+  shared_preferences: ^2.5.5
+  wakelock_plus: ^1.8.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
+
+flutter:
+  uses-material-design: true
+
+# Launcher icons: `dart run flutter_launcher_icons` regenerates every platform
+# set from assets/icon/ (see README).
+flutter_launcher_icons:
+  image_path: assets/icon/icon.png
+  android: true
+  adaptive_icon_background: "#F3EAD3"
+  adaptive_icon_foreground: assets/icon/icon_foreground.png
+  adaptive_icon_monochrome: assets/icon/icon_foreground.png
+  ios: true
+  image_path_ios: assets/icon/icon_square.png
+  remove_alpha_ios: true
+  web:
+    generate: true
+    # Full-bleed source: PWA "maskable" icons are cropped by the OS.
+    image_path: assets/icon/icon_square.png
+    background_color: "#F3EAD3"
+    theme_color: "#8B5E3C"
+  macos:
+    generate: true
+    image_path: assets/icon/icon.png
+  windows:
+    generate: true
+    image_path: assets/icon/icon.png
+    icon_size: 256
+  linux:
+    generate: true
+    image_path: assets/icon/icon.png

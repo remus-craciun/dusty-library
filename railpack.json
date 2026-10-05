@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "provider": "shell",
+  "steps": {
+    "web": {
+      "inputs": [
+        { "image": "ghcr.io/cirruslabs/flutter:stable" },
+        { "local": true }
+      ],
+      "commands": [
+        "cd /app/app && flutter pub get && flutter build web --release",
+        "mkdir -p /app/server/internal/web/dist",
+        "cp -a /app/app/build/web/. /app/server/internal/web/dist/",
+        "sh /app/scripts/stamp-web.sh /app/server/internal/web/dist"
+      ],
+      "deployOutputs": []
+    },
+    "compile": {
+      "inputs": [
+        { "image": "golang:1.27-alpine" },
+        { "local": true, "include": ["server"] },
+        { "step": "web", "include": ["server/internal/web/dist"] }
+      ],
+      "commands": [
+        "cd /app/server && CGO_ENABLED=0 go build -o /app/dusty ./cmd/dusty"
+      ],
+      "deployOutputs": [{ "include": ["dusty"] }]
+    }
+  },
+  "deploy": {
+    "startCommand": "/app/dusty",
+    "variables": {
+      "DUSTY_ADDR": ":8080",
+      "DUSTY_DATA_DIR": "/data"
+    }
+  }
+}

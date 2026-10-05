@@ -1,0 +1,19 @@
+services:
+  dusty:
+    build: .
+    image: dusty-library
+    container_name: dusty-library
+    restart: unless-stopped
+    ports:
+      - "${DUSTY_PORT:-8080}:8080"
+    environment:
+      # Inside the container the server always listens on :8080 and stores
+      # data in /data; override the upload limit via .env.
+      DUSTY_ADDR: ":8080"
+      DUSTY_DATA_DIR: /data
+      DUSTY_MAX_UPLOAD_BYTES: ${DUSTY_MAX_UPLOAD_BYTES:-536870912}
+    volumes:
+      - dusty-data:/data
+
+volumes:
+  dusty-data:

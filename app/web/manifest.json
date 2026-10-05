@@ -1,0 +1,35 @@
+{
+    "name": "Dusty Library",
+    "short_name": "Dusty",
+    "start_url": ".",
+    "display": "standalone",
+    "background_color": "#F3EAD3",
+    "theme_color": "#8B5E3C",
+    "description": "Your own quiet shelf of PDF books: read online or offline, pick up where you left off.",
+    "orientation": "any",
+    "prefer_related_applications": false,
+    "icons": [
+        {
+            "src": "icons/Icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "icons/Icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        },
+        {
+            "src": "icons/Icon-maskable-192.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "maskable"
+        },
+        {
+            "src": "icons/Icon-maskable-512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "maskable"
+        }
+    ]
+}

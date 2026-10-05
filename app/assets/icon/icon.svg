@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F7EFDD"/>
+      <stop offset="1" stop-color="#E8D5B5"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#paper)"/>
+
+  <g transform="translate(512 512) scale(1.0) translate(-512 -512)">
+    <!-- soft shadow under the book -->
+    <ellipse cx="512" cy="760" rx="300" ry="26" fill="#3B2F22" opacity="0.14"/>
+    <!-- covers -->
+    <path d="M512 350 C 430 300, 300 290, 196 318 L196 700 C 300 672, 430 682, 512 740 Z" fill="#8B5E3C"/>
+    <path d="M512 350 C 594 300, 724 290, 828 318 L828 700 C 724 672, 594 682, 512 740 Z" fill="#7A4F31"/>
+    <!-- pages -->
+    <path d="M512 380 C 440 338, 330 330, 236 352 L236 664 C 330 642, 440 652, 512 702 Z" fill="#FFF8EC"/>
+    <path d="M512 380 C 584 338, 694 330, 788 352 L788 664 C 694 642, 584 652, 512 702 Z" fill="#F6ECD8"/>
+    <!-- text lines -->
+    <g stroke="#B9A182" stroke-width="14" stroke-linecap="round" opacity="0.85">
+      <path d="M290 420 C 350 408, 410 410, 466 428"/>
+      <path d="M290 476 C 350 464, 410 466, 466 484"/>
+      <path d="M290 532 C 350 520, 410 522, 466 540"/>
+      <path d="M290 588 C 340 578, 380 580, 420 592"/>
+      <path d="M558 428 C 614 410, 674 408, 734 420"/>
+      <path d="M558 484 C 614 466, 674 464, 734 476"/>
+      <path d="M558 540 C 614 522, 674 520, 734 532"/>
+      <path d="M558 596 C 600 584, 640 582, 690 590"/>
+    </g>
+    <!-- spine -->
+    <path d="M512 350 L512 740" stroke="#5C3A1E" stroke-width="10" stroke-linecap="round"/>
+    <!-- dust motes -->
+    <g fill="#C9A66B">
+      <circle cx="300" cy="240" r="14" opacity="0.75"/>
+      <circle cx="372" cy="188" r="9" opacity="0.55"/>
+      <circle cx="470" cy="236" r="11" opacity="0.65"/>
+      <circle cx="560" cy="178" r="16" opacity="0.7"/>
+      <circle cx="650" cy="250" r="8" opacity="0.5"/>
+      <circle cx="736" cy="196" r="12" opacity="0.65"/>
+      <circle cx="800" cy="260" r="7" opacity="0.45"/>
+      <circle cx="226" cy="300" r="7" opacity="0.5"/>
+    </g>
+  </g>
+</svg>
