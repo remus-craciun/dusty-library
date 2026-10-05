@@ -8,9 +8,10 @@
         { "local": true, "include": ["app", "scripts"] }
       ],
       "commands": [
-        { "path": "/sdks/flutter/bin" },
-        { "path": "/sdks/flutter/bin/cache/dart-sdk/bin" },
-        "cd /app/app && /sdks/flutter/bin/flutter pub get && /sdks/flutter/bin/flutter build web --release",
+        { "path": "/opt/flutter/bin" },
+        { "path": "/opt/flutter/bin/cache/dart-sdk/bin" },
+        "git clone --depth 1 --branch 3.47.6 https://github.com/flutter/flutter.git /opt/flutter && git config --global --add safe.directory /opt/flutter",
+        "cd /app/app && CI=true /opt/flutter/bin/flutter pub get && CI=true /opt/flutter/bin/flutter build web --release",
         "mkdir -p /app/server/internal/web/dist",
         "cp -a /app/app/build/web/. /app/server/internal/web/dist/",
         "sh /app/scripts/stamp-web.sh /app/server/internal/web/dist"

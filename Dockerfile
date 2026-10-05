@@ -1,5 +1,13 @@
-# Stage 1: build the Flutter web bundle
+# Stage 1: build the Flutter web bundle.
+# The Cirrus stable image stopped at Dart 3.12. The app requires Dart ^3.13.4
+# (Flutter 3.47), so the matching SDK is cloned on top of that image.
 FROM ghcr.io/cirruslabs/flutter:stable AS web
+RUN git clone --depth 1 --branch 3.47.6 https://github.com/flutter/flutter.git /opt/flutter \
+ && git config --global --add safe.directory /opt/flutter
+ENV PATH="/opt/flutter/bin:${PATH}" \
+    CI=true \
+    FLUTTER_HOME=/opt/flutter \
+    FLUTTER_ROOT=/opt/flutter
 WORKDIR /src/app
 COPY app/pubspec.yaml app/pubspec.lock ./
 RUN flutter pub get
