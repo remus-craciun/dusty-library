@@ -8,7 +8,9 @@
         { "local": true, "include": ["app", "scripts"] }
       ],
       "commands": [
-        "cd /app/app && flutter pub get && flutter build web --release",
+        { "path": "/sdks/flutter/bin" },
+        { "path": "/sdks/flutter/bin/cache/dart-sdk/bin" },
+        "cd /app/app && /sdks/flutter/bin/flutter pub get && /sdks/flutter/bin/flutter build web --release",
         "mkdir -p /app/server/internal/web/dist",
         "cp -a /app/app/build/web/. /app/server/internal/web/dist/",
         "sh /app/scripts/stamp-web.sh /app/server/internal/web/dist"
