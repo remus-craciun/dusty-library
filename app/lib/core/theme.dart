@@ -38,6 +38,8 @@ class ReaderPalette {
   static const sepia = Color(0xFFE8D5B5);
   static const sepiaInk = Color(0xFF4A3A28);
 
-  static const dark = Color(0xFF121212);
-  static const darkInk = Color(0xFFD8D4CC);
+  /// Slightly raised from black so the grey ink reads well against it.
+  static const dark = Color(0xFF1E1E1E);
+  /// Grey ink so text in the dark reader does not glare, but stays readable.
+  static const darkInk = Color(0xFF8C8C8C);
 }

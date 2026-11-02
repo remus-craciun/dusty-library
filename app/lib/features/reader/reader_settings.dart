@@ -98,13 +98,14 @@ class FilterStyle {
       chromeBackground: ReaderPalette.sepia,
       chromeForeground: ReaderPalette.sepiaInk,
     ),
-    // Inverts luminance and dims slightly so white paper becomes near-black and
-    // text becomes soft light grey instead of glaring white.
+    // Inverts luminance and dims so white paper becomes dark grey
+    // (255 * -0.43 + 140 = 30 = #1E1E1E) and black ink becomes grey
+    // (offset 140 = #8C8C8C) instead of glaring white.
     PageFilter.dark => const FilterStyle(
       matrix: [
-        -0.85, 0, 0, 0, 230, //
-        0, -0.85, 0, 0, 228, //
-        0, 0, -0.85, 0, 224, //
+        -0.43, 0, 0, 0, 140, //
+        0, -0.43, 0, 0, 140, //
+        0, 0, -0.43, 0, 140, //
         0, 0, 0, 1, 0,
       ],
       viewerBackground: Colors.white,

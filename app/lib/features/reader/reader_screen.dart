@@ -414,11 +414,12 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     );
   }
 
-  /// Arrow keys on the web. A step is a short scroll, and holding the key repeats.
+  /// Up/down arrows. A step is a short scroll, and holding the key repeats.
+  /// Left/right instead turn a whole screen via [_turnPage].
   static const _arrowStep = 72.0;
 
   void _scrollByArrow(int direction) {
-    if (!kIsWeb || direction == 0) return;
+    if (direction == 0) return;
     final delta = direction * _arrowStep;
     if (ref.read(focusModeProvider)) {
       _focusController.scrollBy(delta);
@@ -833,6 +834,22 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
             // which walks off on a book whose pages differ in height.
             calculateCurrentPageNumber: _viewerPageNumber,
             onPageChanged: _onPageChanged,
+            // The viewer grabs keyboard focus on the first tap (or gesture)
+            // and then its own key handler swallows the arrow keys, so the
+            // Shortcuts in [_arrowKeys] stop seeing them. Turn the page here
+            // instead, same as a tap on the side margin. Returning null
+            // leaves every other key to the viewer's default handling.
+            onKey: (params, key, isRealKeyPress) {
+              if (key == LogicalKeyboardKey.arrowRight) {
+                unawaited(_turnPage(1));
+                return true;
+              }
+              if (key == LogicalKeyboardKey.arrowLeft) {
+                unawaited(_turnPage(-1));
+                return true;
+              }
+              return null;
+            },
             customizeContextMenuItems: _addLookupMenuItems,
             onGeneralTap: (context, controller, details) {
               if (details.type != PdfViewerGeneralTapType.tap) return false;
@@ -1058,22 +1075,30 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     );
   }
 
-  /// On the web the page is a canvas, so the browser never scrolls it. Arrow
-  /// keys move the reading position instead. Mobile keeps using touch.
+  /// Arrow keys move the reading position on every platform with a keyboard
+  /// (web and desktop; on web the page is a canvas, so the browser never
+  /// scrolls it). Left/right turn a whole screen, exactly like a tap on the
+  /// side margin; up/down do a short scroll. Touch-only mobile just never
+  /// sends key events. In the normal viewer these shortcuts only fire while
+  /// this Focus node is primary; after the first tap pdfrx takes focus and
+  /// left/right are handled via [PdfViewerParams.onKey] instead — same turn.
   Widget _arrowKeys(Widget child) {
-    if (!kIsWeb) return child;
     return Shortcuts(
       shortcuts: const {
         SingleActivator(LogicalKeyboardKey.arrowDown): _ArrowIntent(1),
         SingleActivator(LogicalKeyboardKey.arrowUp): _ArrowIntent(-1),
-        SingleActivator(LogicalKeyboardKey.arrowRight): _ArrowIntent(1),
-        SingleActivator(LogicalKeyboardKey.arrowLeft): _ArrowIntent(-1),
+        SingleActivator(LogicalKeyboardKey.arrowRight): _ArrowIntent(1, horizontal: true),
+        SingleActivator(LogicalKeyboardKey.arrowLeft): _ArrowIntent(-1, horizontal: true),
       },
       child: Actions(
         actions: {
           _ArrowIntent: CallbackAction<_ArrowIntent>(
             onInvoke: (intent) {
-              _scrollByArrow(intent.direction);
+              if (intent.horizontal) {
+                unawaited(_turnPage(intent.direction));
+              } else {
+                _scrollByArrow(intent.direction);
+              }
               return null;
             },
           ),
@@ -1085,8 +1110,11 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
 }
 
 class _ArrowIntent extends Intent {
-  const _ArrowIntent(this.direction);
+  const _ArrowIntent(this.direction, {this.horizontal = false});
   final int direction;
+
+  /// True for left/right, which page-turn like a margin tap.
+  final bool horizontal;
 }
 
 /// Slides a bar in from the top or bottom edge and fades it.
