@@ -35,3 +35,22 @@ class EdgeTapNotifier extends Notifier<bool> {
 final edgeTapProvider = NotifierProvider<EdgeTapNotifier, bool>(
   EdgeTapNotifier.new,
 );
+
+/// Page turns are animated: text pages slide in from the side they come
+/// from, PDF screens scroll. Off, a turn shows the next page at once. A
+/// per-device preference.
+class PageAnimationNotifier extends Notifier<bool> {
+  static const _key = 'page_animation';
+
+  @override
+  bool build() => ref.read(sharedPrefsProvider).getBool(_key) ?? true;
+
+  Future<void> set(bool on) async {
+    state = on;
+    await ref.read(sharedPrefsProvider).setBool(_key, on);
+  }
+}
+
+final pageAnimationProvider = NotifierProvider<PageAnimationNotifier, bool>(
+  PageAnimationNotifier.new,
+);

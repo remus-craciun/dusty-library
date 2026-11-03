@@ -18,6 +18,9 @@ import 'focus_mode.dart';
 import 'focus_reader.dart';
 import 'reader_settings.dart';
 import 'reading_position.dart';
+import 'text/paginator.dart';
+import 'text/text_contents.dart';
+import 'text/text_reader.dart';
 import 'word_lookup.dart';
 
 /// Page at the top of the viewport. Kept stable so the viewer does not reload
@@ -39,9 +42,21 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
 
   final _controller = PdfViewerController();
   final _focusController = FocusReaderController();
+  final _textController = TextReaderController();
   final _downloadProgress = ValueNotifier<double>(0);
 
   Uint8List? _bytes;
+
+  /// For Word documents: the extracted paragraphs, read as reflowing text.
+  List<String>? _paragraphs;
+  List<BookNote> _notes = const [];
+  List<BookHeading> _headings = const [];
+
+  /// Text books: page shown (1-based) and page count at the current layout,
+  /// which may still be growing while later pages are laid out.
+  int _textPage = 0;
+  int _textPages = 0;
+  bool _textCounting = true;
   Object? _error;
   int? _page;
   double? _pageOffset;
@@ -79,11 +94,19 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   Book? get _book =>
       ref.read(libraryProvider).asData?.value.book(widget.bookId);
 
+  /// Taken while the screen is alive: [dispose] saves the last position and
+  /// must not touch `ref` (Riverpod forbids it once unmounting has begun).
+  late final LibraryNotifier _library = ref.read(libraryProvider.notifier);
+  Book? _lastBook;
+
+  bool get _isText => _book?.isText ?? false;
+
   @override
   void initState() {
     super.initState();
     _controller.addListener(_onViewerMoved);
     _find.addListener(_onFindChanged);
+    _library; // resolve now, while ref is usable
     _load();
     _scheduleChromeHide();
     _syncWakelock(ref.read(focusModeProvider));
@@ -96,14 +119,23 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
 
   Future<void> _load() async {
     try {
+      // Opening /read/<id> directly can arrive before the library has loaded.
+      final book =
+          _book ?? (await ref.read(libraryProvider.future)).book(widget.bookId);
+      if (book == null) throw StateError('Book not found');
       final bytes = await ref
           .read(libraryRepositoryProvider)
-          .openBook(
-            widget.bookId,
-            onProgress: (p) => _downloadProgress.value = p,
-          );
+          .openBook(book, onProgress: (p) => _downloadProgress.value = p);
+      final text = book.isText ? decodeBookText(bytes) : null;
       ref.read(libraryProvider.notifier).markDownloaded(widget.bookId);
-      if (mounted) setState(() => _bytes = bytes);
+      if (mounted) {
+        setState(() {
+          _bytes = bytes;
+          _paragraphs = text?.paragraphs;
+          _notes = text?.notes ?? const [];
+          _headings = text?.headings ?? const [];
+        });
+      }
     } catch (e) {
       if (mounted) setState(() => _error = e);
     }
@@ -172,7 +204,10 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     _unsavedOffset = offset;
     _saveTimer?.cancel();
     _saveTimer = Timer(const Duration(milliseconds: 800), _flushProgress);
-    if (_pageCount > 0 && page >= _pageCount) _maybePromptCompletion();
+    // Text books report paragraphs, and the paragraph count past the end on
+    // their last page.
+    final last = (book?.isText ?? false) ? book!.pageCount : _pageCount;
+    if (last > 0 && page >= last) _maybePromptCompletion();
   }
 
   /// The page at the top of focus mode, read while that view is still mounted.
@@ -229,15 +264,15 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   void _flushProgress() {
     final page = _unsavedPage;
     final offset = _unsavedOffset;
-    final book = _book;
+    // Also runs from dispose, so no ref here: the notifier was kept in
+    // initState and the book is the one from the last build (the notifier
+    // merges the progress into its latest copy of that book).
+    final book = _lastBook;
     if (page == null || offset == null || book == null) return;
     _unsavedPage = null;
     _unsavedOffset = null;
     // Fire and forget: the notifier handles offline queuing.
-    ref
-        .read(libraryProvider.notifier)
-        .saveProgress(book, page, offset)
-        .catchError((Object e) => book);
+    _library.saveProgress(book, page, offset).catchError((Object e) => book);
   }
 
   void _maybePromptCompletion() {
@@ -397,8 +432,13 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
 
   /// [direction] is 1 to move forward one screen and -1 to move back.
   Future<void> _turnPage(int direction) async {
+    if (_isText) {
+      await _textController.turn(direction);
+      return;
+    }
+    final animate = ref.read(pageAnimationProvider);
     if (ref.read(focusModeProvider)) {
-      await _focusController.turn(direction);
+      await _focusController.turn(direction, animate: animate);
       return;
     }
     if (!_controller.isReady || direction == 0) return;
@@ -410,7 +450,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     final top = (visible.top + direction * visible.height).clamp(0.0, limit);
     await _controller.goToPosition(
       documentOffset: Offset(visible.left, top),
-      duration: const Duration(milliseconds: 220),
+      duration: animate ? const Duration(milliseconds: 220) : Duration.zero,
     );
   }
 
@@ -420,6 +460,12 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
 
   void _scrollByArrow(int direction) {
     if (direction == 0) return;
+    // Text pages fit the screen, so there is nothing to scroll: up and down
+    // turn the page too.
+    if (_isText) {
+      unawaited(_textController.turn(direction));
+      return;
+    }
     final delta = direction * _arrowStep;
     if (ref.read(focusModeProvider)) {
       _focusController.scrollBy(delta);
@@ -453,7 +499,8 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
-      builder: (_) => ReaderSettingsSheet(onZoomChanged: _applyZoom),
+      builder: (_) =>
+          ReaderSettingsSheet(onZoomChanged: _applyZoom, textBook: _isText),
     );
     _scheduleChromeHide();
   }
@@ -463,7 +510,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     final v = await promptText(
       context,
       title: 'Go to page',
-      label: '1 – $_pageCount',
+      label: '1 – ${_isText ? _textPages : _pageCount}',
       confirm: 'Go',
     );
     final n = int.tryParse(v ?? '');
@@ -473,6 +520,10 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
 
   Future<void> _goToPageNumber(int n) async {
     if (n < 1) return;
+    if (_isText) {
+      if (n <= _textPages) await _textController.goToPage(n);
+      return;
+    }
     if (_pageCount > 0 && n > _pageCount) return;
     if (ref.read(focusModeProvider)) {
       await _focusController.goToPage(n);
@@ -501,11 +552,21 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
   void _onFindQuery(String value) {
     _findDebounce?.cancel();
     _findDebounce = Timer(const Duration(milliseconds: 350), () {
-      final bytes = _bytes;
-      if (!mounted || bytes == null) return;
-      _findJump = -1;
-      _find.start(bytes, value);
+      if (!mounted) return;
+      _startFind(value);
     });
+  }
+
+  void _startFind(String value) {
+    final bytes = _bytes;
+    if (bytes == null) return;
+    _findJump = -1;
+    final paragraphs = _paragraphs;
+    if (paragraphs != null) {
+      _find.startText(paragraphs, value);
+    } else {
+      _find.start(bytes, value);
+    }
   }
 
   void _onFindChanged() {
@@ -514,12 +575,22 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     final shouldJump = hit != null && _find.index != _findJump;
     if (_find.index < 0) _findJump = -1;
     if (shouldJump && _showHit(hit)) _findJump = _find.index;
-    if (_controller.isReady) _controller.invalidate();
+    if (_paragraphs != null) {
+      setState(() {}); // repaint the marks on the text pages
+    } else if (_controller.isReady) {
+      _controller.invalidate();
+    }
   }
 
   /// Moves the reader to [hit]. Returns false when the viewer is not ready yet,
   /// so a later search update can try the same hit again.
   bool _showHit(FindHit hit) {
+    if (_paragraphs != null) {
+      _textController.showText(hit.paragraph, hit.offset);
+      return true;
+    }
+    final bounds = hit.bounds;
+    if (bounds == null) return false;
     if (ref.read(focusModeProvider)) {
       _focusController.goToPage(hit.pageNumber);
       return true;
@@ -528,7 +599,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     _controller.ensureVisible(
       _controller.calcRectForRectInsidePage(
         pageNumber: hit.pageNumber,
-        rect: hit.bounds,
+        rect: bounds,
       ),
       margin: 72,
     );
@@ -540,8 +611,9 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     if (hits.isEmpty) return;
     for (var i = 0; i < hits.length; i++) {
       final hit = hits[i];
-      if (hit.pageNumber != page.pageNumber) continue;
-      final rect = hit.bounds
+      final bounds = hit.bounds;
+      if (bounds == null || hit.pageNumber != page.pageNumber) continue;
+      final rect = bounds
           .toRect(page: page, scaledPageSize: pageRect.size)
           .translate(pageRect.left, pageRect.top);
       canvas.drawRect(
@@ -552,6 +624,27 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
               : const Color(0x66C4A574),
       );
     }
+  }
+
+  /// Contents of a text book, from the headings the document marks.
+  Future<void> _openTextContents() async {
+    _chromeTimer?.cancel();
+    final paragraph = (_textController.spot?.page ?? 1) - 1;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => TextContentsSheet(
+        headings: _headings,
+        current: currentHeading(_headings, paragraph),
+        pageOf: _textController.pageOf,
+        onSelect: (p) {
+          Navigator.pop(ctx);
+          _textController.showText(p, 0);
+        },
+      ),
+    );
+    _scheduleChromeHide();
   }
 
   Future<void> _openOutline() async {
@@ -646,10 +739,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                   _find.next();
                   return;
                 }
-                final bytes = _bytes;
-                if (bytes == null) return;
-                _findJump = -1;
-                _find.start(bytes, value);
+                _startFind(value);
               },
             ),
           ),
@@ -695,8 +785,10 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         ref.watch(readerSettingsProvider).asData?.value ??
         const ReaderSettings();
     final style = FilterStyle.of(settings.filter);
-    final focus = ref.watch(focusModeProvider);
-    ref.listen(focusModeProvider, (_, on) => _syncWakelock(on));
+    final isText = book?.isText ?? false;
+    // Focus mode trims PDF page margins; text books have none to trim.
+    final focus = ref.watch(focusModeProvider) && !isText;
+    ref.listen(focusModeProvider, (_, on) => _syncWakelock(on && !_isText));
     if (_shownFocus != focus) {
       // The viewer that is about to mount starts at the top of a page.
       // Ignore that until it has moved to the saved spot. Take the spot from
@@ -707,6 +799,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
       if (focus) _takeSpotFromViewer();
     }
 
+    _lastBook = book;
     if (book == null) {
       return Scaffold(
         appBar: AppBar(),
@@ -715,8 +808,16 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     }
 
     final page = _page ?? book.currentPage;
-    final total = _pageCount > 0 ? _pageCount : book.pageCount;
+    // For text books page and total are paragraphs: steady across layouts.
+    final total = _pageCount > 0 && !isText ? _pageCount : book.pageCount;
     final progress = total > 0 ? (page / total).clamp(0.0, 1.0) : 0.0;
+    final folio = isText
+        ? (_textPages > 0
+              ? 'Page $_textPage of ${_textCounting ? '…' : _textPages}  ·  ${(progress * 100).round()}%'
+              : '${(progress * 100).round()}%')
+        : total > 0
+        ? '$page / $total  ·  ${(progress * 100).round()}%'
+        : '$page';
 
     Widget body;
     if (_error != null) {
@@ -747,6 +848,41 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
             ],
           ),
         ),
+      );
+    } else if (_paragraphs != null) {
+      final (savedParagraph, savedOffset) = _savedSpot(book);
+      final hit = _find.current;
+      body = TextReader(
+        key: ValueKey('text-${book.id}'),
+        paragraphs: _paragraphs!,
+        notes: _notes,
+        headings: _headings,
+        controller: _textController,
+        fontScale: settings.zoom,
+        animatePages: ref.watch(pageAnimationProvider),
+        background: style.chromeBackground,
+        foreground: style.chromeForeground,
+        initialParagraph: savedParagraph,
+        initialOffset: savedOffset,
+        highlight: _findOpen ? _find.query : '',
+        activeHit: _findOpen && hit != null
+            ? TextSpot(hit.paragraph, hit.offset)
+            : null,
+        onPositioned: () {
+          if (!mounted || _acceptPosition) return;
+          setState(() => _acceptPosition = true);
+        },
+        onPositionChanged: _rememberPosition,
+        onPagesChanged: (page, total, counting) {
+          if (!mounted) return;
+          setState(() {
+            _textPage = page;
+            _textPages = total;
+            _textCounting = counting;
+          });
+        },
+        onTap: _onReaderTap,
+        onWord: (word) => _showLookup(word, meaning: true),
       );
     } else if (focus) {
       // Switching modes mid-read keeps the current page and the spot on it.
@@ -932,16 +1068,17 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                                     ],
                                   ),
                                 ),
-                                IconButton(
-                                  tooltip: focus
-                                      ? 'Leave focus mode'
-                                      : 'Focus mode',
-                                  color: style.chromeForeground,
-                                  icon: FocusIcon(active: focus),
-                                  onPressed: _bytes != null
-                                      ? _toggleFocusMode
-                                      : null,
-                                ),
+                                if (!isText)
+                                  IconButton(
+                                    tooltip: focus
+                                        ? 'Leave focus mode'
+                                        : 'Focus mode',
+                                    color: style.chromeForeground,
+                                    icon: FocusIcon(active: focus),
+                                    onPressed: _bytes != null
+                                        ? _toggleFocusMode
+                                        : null,
+                                  ),
                                 IconButton(
                                   tooltip: 'Find in book',
                                   color: style.chromeForeground,
@@ -951,28 +1088,34 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                                       ? _toggleFind
                                       : null,
                                 ),
-                                IconButton(
-                                  tooltip: 'Contents',
-                                  color: style.chromeForeground,
-                                  icon: _outlineLoading
-                                      ? SizedBox(
-                                          width: 18,
-                                          height: 18,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                            color: style.chromeForeground,
+                                if (!isText || _headings.isNotEmpty)
+                                  IconButton(
+                                    tooltip: 'Contents',
+                                    color: style.chromeForeground,
+                                    icon: _outlineLoading
+                                        ? SizedBox(
+                                            width: 18,
+                                            height: 18,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: style.chromeForeground,
+                                            ),
+                                          )
+                                        : const Icon(
+                                            Icons.format_list_bulleted,
                                           ),
-                                        )
-                                      : const Icon(Icons.format_list_bulleted),
-                                  onPressed: _bytes != null && !_outlineLoading
-                                      ? _openOutline
-                                      : null,
-                                ),
+                                    onPressed: isText
+                                        ? _openTextContents
+                                        : _bytes != null && !_outlineLoading
+                                        ? _openOutline
+                                        : null,
+                                  ),
                                 IconButton(
                                   tooltip: 'Go to page',
                                   color: style.chromeForeground,
                                   icon: const Icon(Icons.pin_outlined),
-                                  onPressed: _pageCount > 0
+                                  onPressed:
+                                      (isText ? _textPages : _pageCount) > 0
                                       ? _jumpToPage
                                       : null,
                                 ),
@@ -1038,9 +1181,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
                               ),
                               const SizedBox(width: 12),
                               Text(
-                                total > 0
-                                    ? '$page / $total  ·  ${(progress * 100).round()}%'
-                                    : '$page',
+                                folio,
                                 style: TextStyle(
                                   color: style.chromeForeground,
                                   fontFeatures: const [
@@ -1087,8 +1228,14 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
       shortcuts: const {
         SingleActivator(LogicalKeyboardKey.arrowDown): _ArrowIntent(1),
         SingleActivator(LogicalKeyboardKey.arrowUp): _ArrowIntent(-1),
-        SingleActivator(LogicalKeyboardKey.arrowRight): _ArrowIntent(1, horizontal: true),
-        SingleActivator(LogicalKeyboardKey.arrowLeft): _ArrowIntent(-1, horizontal: true),
+        SingleActivator(LogicalKeyboardKey.arrowRight): _ArrowIntent(
+          1,
+          horizontal: true,
+        ),
+        SingleActivator(LogicalKeyboardKey.arrowLeft): _ArrowIntent(
+          -1,
+          horizontal: true,
+        ),
       },
       child: Actions(
         actions: {

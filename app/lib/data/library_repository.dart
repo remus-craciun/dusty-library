@@ -183,19 +183,28 @@ class LibraryRepository {
     await cache.writeLibrary(LibrarySnapshot(shelves: snap.shelves, books: books, savedAt: snap.savedAt));
   }
 
-  /// Returns the PDF bytes, downloading and caching them on first access.
-  Future<Uint8List> openBook(int id, {void Function(double)? onProgress}) async {
-    final local = await cache.readBook(id);
-    if (local != null) return local;
-    final bytes = await api.downloadBook(id, onProgress: onProgress);
-    await cache.writeBook(id, bytes);
+  /// Returns what the reader opens (PDF bytes, or for Word documents the
+  /// extracted text as JSON), downloading and caching it on first access.
+  Future<Uint8List> openBook(Book book, {void Function(double)? onProgress}) async {
+    final local = await cache.readBook(book.id);
+    if (local != null && (!book.isText || isCurrentBookText(local))) return local;
+    // A text book cached as its original .docx/.doc, or as text in an older
+    // format (without notes), is replaced by the current extracted text.
+    if (local != null) await cache.deleteBook(book.id);
+    final bytes = await api.downloadBook(book.id, text: book.isText, onProgress: onProgress);
+    await cache.writeBook(book.id, bytes);
     return bytes;
   }
 
-  Future<void> download(int id, {void Function(double)? onProgress}) async {
-    if (await cache.hasBook(id)) return;
-    final bytes = await api.downloadBook(id, onProgress: onProgress);
-    await cache.writeBook(id, bytes);
+  Future<void> download(Book book, {void Function(double)? onProgress}) async {
+    if (await cache.hasBook(book.id)) {
+      if (!book.isText) return;
+      final local = await cache.readBook(book.id);
+      if (local != null && isCurrentBookText(local)) return;
+      await cache.deleteBook(book.id);
+    }
+    final bytes = await api.downloadBook(book.id, text: book.isText, onProgress: onProgress);
+    await cache.writeBook(book.id, bytes);
   }
 
   Future<void> removeDownload(int id) => cache.deleteBook(id);

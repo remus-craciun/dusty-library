@@ -25,7 +25,17 @@ class FileCache implements LocalCache {
   File get _settings => File('${root.path}/settings.json');
   File get _pending => File('${root.path}/pending_progress.json');
   Directory get _books => Directory('${root.path}/books');
-  File bookFile(int id) => File('${_books.path}/$id.pdf');
+  /// PDFs are kept as `<id>.pdf`; the extracted text of Word documents (a
+  /// JSON object) as `<id>.json`.
+  File bookFile(int id, {bool text = false}) => File('${_books.path}/$id.${text ? 'json' : 'pdf'}');
+
+  Future<File?> _existingBookFile(int id) async {
+    for (final text in [false, true]) {
+      final f = bookFile(id, text: text);
+      if (await f.exists()) return f;
+    }
+    return null;
+  }
 
   @override
   bool get persistsFiles => true;
@@ -66,26 +76,27 @@ class FileCache implements LocalCache {
       _writeJson(_settings, settings.toJson());
 
   @override
-  Future<bool> hasBook(int id) => bookFile(id).exists();
+  Future<bool> hasBook(int id) async => await _existingBookFile(id) != null;
 
   @override
-  Future<Uint8List?> readBook(int id) async {
-    final f = bookFile(id);
-    return await f.exists() ? f.readAsBytes() : null;
-  }
+  Future<Uint8List?> readBook(int id) async => (await _existingBookFile(id))?.readAsBytes();
 
   @override
   Future<void> writeBook(int id, Uint8List bytes) async {
     await _books.create(recursive: true);
-    final tmp = File('${bookFile(id).path}.tmp');
+    final text = isBookTextJson(bytes);
+    final target = bookFile(id, text: text);
+    final tmp = File('${target.path}.tmp');
     await tmp.writeAsBytes(bytes, flush: true);
-    await tmp.rename(bookFile(id).path);
+    await tmp.rename(target.path);
   }
 
   @override
   Future<void> deleteBook(int id) async {
-    final f = bookFile(id);
-    if (await f.exists()) await f.delete();
+    for (final text in [false, true]) {
+      final f = bookFile(id, text: text);
+      if (await f.exists()) await f.delete();
+    }
   }
 
   @override
@@ -94,8 +105,11 @@ class FileCache implements LocalCache {
     final ids = <int>{};
     await for (final e in _books.list()) {
       final name = e.uri.pathSegments.last;
-      if (!name.endsWith('.pdf')) continue;
-      final id = int.tryParse(name.substring(0, name.length - 4));
+      final dot = name.lastIndexOf('.');
+      if (dot < 0) continue;
+      final ext = name.substring(dot + 1);
+      if (ext != 'pdf' && ext != 'json') continue;
+      final id = int.tryParse(name.substring(0, dot));
       if (id != null) ids.add(id);
     }
     return ids;

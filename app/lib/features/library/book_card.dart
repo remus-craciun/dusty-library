@@ -116,9 +116,13 @@ class BookCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    book.pageCount > 0
-                        ? '$percent%  ·  ${book.currentPage.clamp(0, book.pageCount)} / ${book.pageCount} pages'
-                        : 'Not opened yet',
+                    book.pageCount <= 0
+                        ? 'Not opened yet'
+                        // Word documents have no fixed pages: pages depend on
+                        // the screen and font size, so only the share is shown.
+                        : book.isText
+                        ? '$percent%  ·  ${book.format.toUpperCase()}'
+                        : '$percent%  ·  ${book.currentPage.clamp(0, book.pageCount)} / ${book.pageCount} pages',
                     style: theme.textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
                   ),
                 ],

@@ -10,6 +10,9 @@ void main() {
     const text = "a well-known don't.";
     expect(wordAtIndex(text, 0), 'a');
     expect(wordAtIndex(text, text.indexOf('known')), 'well-known');
+    // Superscript note markers are not part of the word.
+    expect(wordAtIndex('Buonaparte¹ came', 3), 'Buonaparte');
+    expect(wordAtIndex('Buonaparte¹ came', 10), isNull);
     expect(wordAtIndex(text, text.indexOf("don't") + 3), "don't");
     expect(wordAtIndex(text, text.length - 1), isNull);
     expect(wordAtIndex(text, -1), isNull);

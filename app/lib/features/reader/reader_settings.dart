@@ -131,17 +131,22 @@ class FilterStyle {
 
 /// Bottom sheet with the zoom slider and filter choices.
 class ReaderSettingsSheet extends ConsumerWidget {
-  const ReaderSettingsSheet({super.key, required this.onZoomChanged});
+  const ReaderSettingsSheet({super.key, required this.onZoomChanged, this.textBook = false});
 
   /// Called with the new relative zoom so the open viewer can apply it live.
   final ValueChanged<double> onZoomChanged;
+
+  /// A Word document read as reflowing text: there are no page margins to
+  /// trim, so focus mode does not apply and the slider sets the font size.
+  final bool textBook;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final settings = ref.watch(readerSettingsProvider).asData?.value ?? const ReaderSettings();
     final notifier = ref.read(readerSettingsProvider.notifier);
-    final focus = ref.watch(focusModeProvider);
+    final focus = ref.watch(focusModeProvider) && !textBook;
     final edgeTap = ref.watch(edgeTapProvider);
+    final pageAnimation = ref.watch(pageAnimationProvider);
     final theme = Theme.of(context);
 
     return SafeArea(
@@ -151,21 +156,38 @@ class ReaderSettingsSheet extends ConsumerWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: focus,
-              onChanged: (v) => ref.read(focusModeProvider.notifier).set(v),
-              title: const Text('Focus mode'),
-              subtitle: const Text('Trim page margins so the text fills the screen width and keep the screen awake.'),
-              secondary: FocusIcon(active: focus),
-            ),
+            if (!textBook)
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: focus,
+                onChanged: (v) => ref.read(focusModeProvider.notifier).set(v),
+                title: const Text('Focus mode'),
+                subtitle: const Text('Trim page margins so the text fills the screen width and keep the screen awake.'),
+                secondary: FocusIcon(active: focus),
+              ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               value: edgeTap,
               onChanged: (v) => ref.read(edgeTapProvider.notifier).set(v),
               title: const Text('Edge taps'),
-              subtitle: const Text('Tap the left or right 20% of the screen to move back or forward by one screen.'),
+              subtitle: Text(
+                textBook
+                    ? 'Tap the left or right 20% of the screen to turn the page.'
+                    : 'Tap the left or right 20% of the screen to move back or forward by one screen.',
+              ),
               secondary: const Icon(Icons.touch_app_outlined),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: pageAnimation,
+              onChanged: (v) => ref.read(pageAnimationProvider.notifier).set(v),
+              title: const Text('Page animation'),
+              subtitle: Text(
+                textBook
+                    ? 'Slide pages in when turning them. Off, the next page appears at once.'
+                    : 'Scroll smoothly when moving by a screen. Off, the view jumps.',
+              ),
+              secondary: const Icon(Icons.auto_stories_outlined),
             ),
             const SizedBox(height: 8),
             Text('Text size', style: theme.textTheme.titleMedium),

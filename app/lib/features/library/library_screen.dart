@@ -182,8 +182,8 @@ class LibraryScreen extends ConsumerWidget {
     try {
       files = await FilePicker.pickFiles(
         type: FileType.custom,
-        allowedExtensions: const ['pdf'],
-        dialogTitle: 'Choose a PDF',
+        allowedExtensions: BookFormat.uploadExtensions,
+        dialogTitle: 'Choose a book (PDF or Word)',
         webOptions: pickerWebOptions(),
       );
     } catch (e) {
@@ -377,7 +377,7 @@ class _BookGridState extends ConsumerState<_BookGrid> {
             Text('No books here yet', style: theme.textTheme.titleMedium),
             const SizedBox(height: 4),
             Text(
-              'Use "Add book" to upload a PDF.',
+              'Use "Add book" to upload a PDF or Word document.',
               style: theme.textTheme.bodySmall,
             ),
           ],
@@ -491,6 +491,7 @@ class _BookGridState extends ConsumerState<_BookGrid> {
 }
 
 String _continueLabel(Book book) {
+  if (book.isText) return 'Continue · ${(book.progress * 100).round()}%';
   final page = book.currentPage < 1 ? 1 : book.currentPage;
   if (book.pageCount > 0) return 'Continue · page $page of ${book.pageCount}';
   return 'Continue · page $page';

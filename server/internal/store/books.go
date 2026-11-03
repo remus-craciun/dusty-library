@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const bookCols = `id, user_id, shelf_id, title, author, filename, size_bytes, page_count, current_page, page_offset, progress_updated_at, last_read_at, created_at, updated_at`
+const bookCols = `id, user_id, shelf_id, title, author, filename, format, size_bytes, page_count, current_page, page_offset, progress_updated_at, last_read_at, created_at, updated_at`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -18,7 +18,7 @@ type rowScanner interface {
 func scanBook(r rowScanner) (*Book, error) {
 	var b Book
 	var progressAt, lastRead sql.NullString
-	if err := r.Scan(&b.ID, &b.UserID, &b.ShelfID, &b.Title, &b.Author, &b.Filename, &b.SizeBytes, &b.PageCount, &b.CurrentPage, &b.PageOffset, &progressAt, &lastRead, &b.CreatedAt, &b.UpdatedAt); err != nil {
+	if err := r.Scan(&b.ID, &b.UserID, &b.ShelfID, &b.Title, &b.Author, &b.Filename, &b.Format, &b.SizeBytes, &b.PageCount, &b.CurrentPage, &b.PageOffset, &progressAt, &lastRead, &b.CreatedAt, &b.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -69,6 +69,7 @@ type NewBook struct {
 	Title     string
 	Author    string
 	Filename  string
+	Format    string
 	SizeBytes int64
 	PageCount int
 }
@@ -76,10 +77,14 @@ type NewBook struct {
 // CreateBook inserts a book row and returns it.
 func (s *Store) CreateBook(ctx context.Context, userID int64, nb NewBook) (*Book, error) {
 	ts := now()
+	format := nb.Format
+	if format == "" {
+		format = FormatPDF
+	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO books (user_id, shelf_id, title, author, filename, size_bytes, page_count, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		userID, nb.ShelfID, nb.Title, nb.Author, nb.Filename, nb.SizeBytes, nb.PageCount, ts, ts)
+		`INSERT INTO books (user_id, shelf_id, title, author, filename, format, size_bytes, page_count, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		userID, nb.ShelfID, nb.Title, nb.Author, nb.Filename, format, nb.SizeBytes, nb.PageCount, ts, ts)
 	if err != nil {
 		return nil, err
 	}

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,14 +12,102 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
+	"github.com/remus/dusty-library/server/internal/extract"
 	"github.com/remus/dusty-library/server/internal/store"
 )
 
-func (s *Server) bookPath(id int64) string {
-	return filepath.Join(s.booksDir, fmt.Sprintf("%d.pdf", id))
+// bookPath is where the uploaded file of a book is kept, named by id and
+// format (books uploaded before formats existed are all PDFs).
+func (s *Server) bookPath(id int64, format string) string {
+	if format == "" {
+		format = store.FormatPDF
+	}
+	return filepath.Join(s.booksDir, fmt.Sprintf("%d.%s", id, format))
+}
+
+// bookTextPath is where the text extracted from a Word document is kept, as
+// an [extract.Book] in JSON: {"version":2,"paragraphs":[...],"notes":[...]}.
+func (s *Server) bookTextPath(id int64) string {
+	return filepath.Join(s.booksDir, fmt.Sprintf("%d.json", id))
+}
+
+var bookContentTypes = map[string]string{
+	store.FormatPDF:  "application/pdf",
+	store.FormatDocx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	store.FormatDoc:  "application/msword",
+}
+
+// textUpgrade serialises re-extraction of books stored in an older format.
+var textUpgrade sync.Mutex
+
+// storedTextVersion reads the format version at the start of a stored text
+// file. Files written before versions existed start with "paragraphs" and
+// count as version 1.
+func storedTextVersion(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	head := make([]byte, 32)
+	n, _ := io.ReadFull(f, head)
+	const prefix = `{"version":`
+	h := string(head[:n])
+	if !strings.HasPrefix(h, prefix) {
+		return 1, nil
+	}
+	h = h[len(prefix):]
+	end := strings.IndexAny(h, ",}")
+	if end < 0 {
+		return 1, nil
+	}
+	v, err := strconv.Atoi(h[:end])
+	if err != nil {
+		return 1, nil
+	}
+	return v, nil
+}
+
+// writeBookText stores an extracted book atomically.
+func (s *Server) writeBookText(id int64, book *extract.Book) error {
+	raw, err := json.Marshal(book)
+	if err != nil {
+		return err
+	}
+	tmp := s.bookTextPath(id) + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.bookTextPath(id))
+}
+
+// upgradeBookText re-extracts a book whose stored text predates the current
+// format (for example from before notes were extracted), keeping the page
+// count (paragraph count) in step. Failures leave the old text in place.
+func (s *Server) upgradeBookText(r *http.Request, b *store.Book) {
+	textUpgrade.Lock()
+	defer textUpgrade.Unlock()
+	if v, err := storedTextVersion(s.bookTextPath(b.ID)); err != nil || v >= extract.Version {
+		return
+	}
+	book, err := extract.Extract(s.bookPath(b.ID, b.Format), b.Format)
+	if err != nil {
+		s.log.Warn("re-extract book text", "id", b.ID, "err", err)
+		return
+	}
+	if err := s.writeBookText(b.ID, book); err != nil {
+		s.log.Warn("store re-extracted text", "id", b.ID, "err", err)
+		return
+	}
+	if n := len(book.Paragraphs); n != b.PageCount {
+		if _, err := s.store.UpdateBook(r.Context(), mustUser(r), b.ID, store.BookPatch{PageCount: &n}); err != nil {
+			s.log.Warn("update page count", "id", b.ID, "err", err)
+		}
+	}
 }
 
 func (s *Server) handleListBooks(w http.ResponseWriter, r *http.Request) {
@@ -55,10 +144,11 @@ func (s *Server) handleGetBook(w http.ResponseWriter, r *http.Request) {
 
 // handleUploadBook accepts multipart/form-data with fields:
 //
-//	file       the PDF (required)
+//	file       the PDF, .docx or .doc (required; recognised by content)
 //	title      display title (defaults to the file name without extension)
 //	author     optional
-//	page_count optional, computed client-side
+//	page_count optional, computed client-side for PDFs; for Word documents
+//	           the server sets it to the number of extracted paragraphs
 //	shelf_id   optional, defaults to the Active shelf
 func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
 	uid := mustUser(r)
@@ -79,6 +169,7 @@ func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
 			os.Remove(tmpPath)
 		}
 	}
+	nb.Format = store.FormatPDF
 
 	for {
 		part, err := mr.NextPart()
@@ -111,14 +202,16 @@ func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			tmpPath = tmp.Name()
-			head := make([]byte, 5)
+			head := make([]byte, extract.HeadSize)
 			n, _ := io.ReadFull(part, head)
-			if !bytes.HasPrefix(head[:n], []byte("%PDF-")) {
+			format, ok := extract.Detect(head[:n])
+			if !ok {
 				tmp.Close()
 				cleanup()
-				writeError(w, http.StatusBadRequest, "file is not a PDF")
+				writeError(w, http.StatusBadRequest, "file must be a PDF, .docx or .doc")
 				return
 			}
+			nb.Format = format
 			written, err := io.Copy(tmp, io.MultiReader(bytes.NewReader(head[:n]), part))
 			tmp.Close()
 			if err != nil {
@@ -174,6 +267,24 @@ func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing file")
 		return
 	}
+
+	// Word documents are read as text: extract it now so a file we cannot
+	// read is rejected before anything is stored.
+	var text *extract.Book
+	if nb.Format != store.FormatPDF {
+		book, err := extract.Extract(tmpPath, nb.Format)
+		if err != nil {
+			cleanup()
+			if errors.Is(err, extract.ErrNoText) || errors.Is(err, extract.ErrUnsupported) {
+				writeError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), extract.ErrUnsupported.Error()+": "))
+				return
+			}
+			s.fail(w, err)
+			return
+		}
+		text = book
+		nb.PageCount = len(book.Paragraphs)
+	}
 	if nb.Title == "" {
 		nb.Title = strings.TrimSuffix(nb.Filename, filepath.Ext(nb.Filename))
 	}
@@ -203,8 +314,17 @@ func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	if err := os.Rename(tmpPath, s.bookPath(book.ID)); err != nil {
+	if text != nil {
+		if err := s.writeBookText(book.ID, text); err != nil {
+			cleanup()
+			_ = s.store.DeleteBook(r.Context(), uid, book.ID)
+			s.fail(w, err)
+			return
+		}
+	}
+	if err := os.Rename(tmpPath, s.bookPath(book.ID, book.Format)); err != nil {
 		cleanup()
+		os.Remove(s.bookTextPath(book.ID))
 		_ = s.store.DeleteBook(r.Context(), uid, book.ID)
 		s.fail(w, err)
 		return
@@ -265,12 +385,20 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	if err := s.store.DeleteBook(r.Context(), mustUser(r), id); err != nil {
+	uid := mustUser(r)
+	b, err := s.store.BookByID(r.Context(), uid, id)
+	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	if err := os.Remove(s.bookPath(id)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		s.log.Warn("remove book file", "id", id, "err", err)
+	if err := s.store.DeleteBook(r.Context(), uid, id); err != nil {
+		s.fail(w, err)
+		return
+	}
+	for _, p := range []string{s.bookPath(id, b.Format), s.bookTextPath(id)} {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			s.log.Warn("remove book file", "id", id, "path", p, "err", err)
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -286,7 +414,7 @@ func (s *Server) handleBookFile(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	f, err := os.Open(s.bookPath(id))
+	f, err := os.Open(s.bookPath(id, b.Format))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			writeError(w, http.StatusNotFound, "file missing")
@@ -301,10 +429,53 @@ func (s *Server) handleBookFile(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/pdf")
+	ct, ok := bookContentTypes[b.Format]
+	if !ok {
+		ct = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", b.Filename))
 	w.Header().Set("Cache-Control", "private, max-age=0")
 	http.ServeContent(w, r, b.Filename, info.ModTime(), f)
+}
+
+// handleBookText serves the text extracted from a Word document (an
+// [extract.Book]). PDFs have no stored text (the client reads it from the
+// PDF) and get 404. Text stored in an older format is extracted again first.
+func (s *Server) handleBookText(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	b, err := s.store.BookByID(r.Context(), mustUser(r), id)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if b.Format == store.FormatPDF {
+		writeError(w, http.StatusNotFound, "book has no extracted text")
+		return
+	}
+	s.upgradeBookText(r, b)
+	f, err := os.Open(s.bookTextPath(id))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusNotFound, "text missing")
+			return
+		}
+		s.fail(w, err)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "private, max-age=0")
+	http.ServeContent(w, r, "", info.ModTime(), f)
 }
 
 type progressBody struct {

@@ -34,7 +34,17 @@ type Shelf struct {
 	CreatedAt string `json:"created_at"`
 }
 
-// Book is an uploaded PDF together with its reading progress.
+// Book formats. PDFs are rendered as pages by the client; Word documents are
+// converted to paragraphs of text on upload and read as reflowable text.
+const (
+	FormatPDF  = "pdf"
+	FormatDocx = "docx"
+	FormatDoc  = "doc"
+)
+
+// Book is an uploaded PDF or Word document together with its reading
+// progress. For Word documents PageCount is the number of paragraphs and
+// CurrentPage/PageOffset are a paragraph index and a fraction through it.
 type Book struct {
 	ID                int64   `json:"id"`
 	UserID            int64   `json:"-"`
@@ -42,6 +52,7 @@ type Book struct {
 	Title             string  `json:"title"`
 	Author            string  `json:"author"`
 	Filename          string  `json:"filename"`
+	Format            string  `json:"format"`
 	SizeBytes         int64   `json:"size_bytes"`
 	PageCount         int     `json:"page_count"`
 	CurrentPage       int     `json:"current_page"`

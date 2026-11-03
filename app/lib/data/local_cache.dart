@@ -6,6 +6,26 @@ import 'local_cache_memory.dart'
     if (dart.library.io) 'local_cache_io.dart'
     as impl;
 
+/// Whether cached book bytes are the extracted text of a Word document (the
+/// JSON object served by `/api/books/{id}/text`) rather than a file such as a
+/// PDF (`%PDF-`) or the original .docx (a zip, `PK`).
+bool isBookTextJson(Uint8List bytes) =>
+    bytes.isNotEmpty && bytes.first == 0x7B; // '{'
+
+/// Format version of `GET /api/books/{id}/text` this client reads. Cached
+/// copies in an older format (version 1 had no notes, version 2 no headings)
+/// are fetched again.
+const bookTextVersion = 3;
+
+/// Whether cached text bytes are in the current format. Only the start is
+/// read: the server writes `{"version":N,...` first.
+bool isCurrentBookText(Uint8List bytes) {
+  final end = bytes.length < 32 ? bytes.length : 32;
+  final head = String.fromCharCodes(bytes.sublist(0, end));
+  final m = RegExp(r'^\{"version":(\d+)').firstMatch(head);
+  return m != null && int.parse(m.group(1)!) >= bookTextVersion;
+}
+
 /// Snapshot of the library persisted for offline use.
 class LibrarySnapshot {
   const LibrarySnapshot({
