@@ -8,6 +8,29 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('Book', () {
+    test('format defaults to pdf and marks Word documents as text', () {
+      final base = {
+        'id': 1,
+        'shelf_id': 1,
+        'title': 'T',
+        'created_at': '2026-01-01T00:00:00Z',
+      };
+      final pdf = Book.fromJson(base);
+      expect(pdf.format, BookFormat.pdf);
+      expect(pdf.isText, isFalse);
+      final docx = Book.fromJson({
+        ...base,
+        'format': 'docx',
+        'page_count': 40,
+        'current_page': 40,
+        'page_offset': 1,
+      });
+      expect(docx.isText, isTrue);
+      expect(docx.isFinished, isTrue);
+      expect(Book.fromJson(docx.toJson()).format, 'docx');
+      expect(docx.copyWith(title: 'U').format, 'docx');
+    });
+
     Book book({int pages = 0, int page = 0}) => Book(
       id: 1,
       shelfId: 1,

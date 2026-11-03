@@ -1,12 +1,20 @@
 import 'package:flutter/foundation.dart';
 import 'package:pdfrx/pdfrx.dart';
 
-/// One place a query was found in a PDF.
+/// One place a query was found: in a PDF a page and the match's box on it;
+/// in a text book a paragraph index and the character offset in it.
 class FindHit {
-  const FindHit({required this.pageNumber, required this.bounds});
+  const FindHit({
+    required this.pageNumber,
+    this.bounds,
+    this.paragraph = 0,
+    this.offset = 0,
+  });
 
   final int pageNumber;
-  final PdfRect bounds;
+  final PdfRect? bounds;
+  final int paragraph;
+  final int offset;
 }
 
 /// Searches a PDF's text and keeps the hits so the reader can step through them.
@@ -70,6 +78,32 @@ class BookFind extends ChangeNotifier {
         notifyListeners();
       }
     }
+  }
+
+  /// Searches the paragraphs of a text book (case-insensitive). This is
+  /// quick enough to finish at once.
+  void startText(List<String> paragraphs, String raw) {
+    _generation++;
+    final q = raw.trim().toLowerCase();
+    query = raw.trim();
+    searching = false;
+    totalPages = searchedPages = paragraphs.length;
+    final found = <FindHit>[];
+    if (q.isNotEmpty) {
+      for (var i = 0; i < paragraphs.length; i++) {
+        final lower = paragraphs[i].toLowerCase();
+        for (
+          var at = lower.indexOf(q);
+          at >= 0;
+          at = lower.indexOf(q, at + q.length)
+        ) {
+          found.add(FindHit(pageNumber: i + 1, paragraph: i, offset: at));
+        }
+      }
+    }
+    hits = List.unmodifiable(found);
+    index = hits.isEmpty ? -1 : 0;
+    notifyListeners();
   }
 
   void clear() {

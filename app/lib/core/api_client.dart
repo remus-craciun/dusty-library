@@ -203,7 +203,7 @@ class ApiClient {
   Future<Book> getBook(int id) async =>
       Book.fromJson(await _get('/api/books/$id') as Map<String, dynamic>);
 
-  /// Uploads a PDF. [onProgress] receives the fraction of bytes handed to the
+  /// Uploads a PDF or Word document. [onProgress] receives the fraction of bytes handed to the
   /// HTTP client (0..1). On native platforms this tracks the socket closely;
   /// browsers buffer the whole body first, so there it jumps to 1 early.
   Future<Book> uploadBook({
@@ -218,8 +218,8 @@ class ApiClient {
     final req = http.MultipartRequest('POST', _uri('/api/books'))
       ..headers.addAll(_headers(json: false))
       ..fields['title'] = title
-      ..fields['author'] = author
-      ..fields['page_count'] = '$pageCount';
+      ..fields['author'] = author;
+    if (pageCount > 0) req.fields['page_count'] = '$pageCount';
     if (shelfId != null) req.fields['shelf_id'] = '$shelfId';
     req.files.add(
       http.MultipartFile(
@@ -281,12 +281,15 @@ class ApiClient {
             as Map<String, dynamic>,
       );
 
-  /// Downloads the PDF bytes, reporting progress in 0..1 when the size is known.
+  /// Downloads what the reader needs for a book, reporting progress in 0..1
+  /// when the size is known: the PDF bytes, or for Word documents ([text])
+  /// the extracted paragraphs as JSON (see [decodeBookText]).
   Future<Uint8List> downloadBook(
     int id, {
+    bool text = false,
     void Function(double)? onProgress,
   }) async {
-    final req = http.Request('GET', _uri('/api/books/$id/file'))
+    final req = http.Request('GET', _uri('/api/books/$id/${text ? 'text' : 'file'}'))
       ..headers.addAll(_headers(json: false));
     http.StreamedResponse res;
     try {

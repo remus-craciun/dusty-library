@@ -109,8 +109,10 @@ class LibraryNotifier extends AsyncNotifier<LibraryData> {
     );
   }
 
-  /// Uploads a PDF. The page count is computed on the device so the server
-  /// never has to parse PDFs. [progress] is updated as the stages advance.
+  /// Uploads a PDF or Word document. For PDFs the page count is computed on
+  /// the device so the server never has to parse them; for Word documents the
+  /// server extracts the text and counts its paragraphs. [progress] is updated
+  /// as the stages advance.
   Future<Book> upload({
     required String filename,
     required Uint8List bytes,
@@ -119,14 +121,16 @@ class LibraryNotifier extends AsyncNotifier<LibraryData> {
     int? shelfId,
     UploadProgress? progress,
   }) async {
-    progress?.setStage(UploadStage.counting);
     var pageCount = 0;
-    try {
-      final doc = await PdfDocument.openData(bytes, sourceName: filename);
-      pageCount = doc.pages.length;
-      await doc.dispose();
-    } catch (_) {
-      // Unreadable locally; the reader will report the count once it opens.
+    if (filename.toLowerCase().endsWith('.pdf')) {
+      progress?.setStage(UploadStage.counting);
+      try {
+        final doc = await PdfDocument.openData(bytes, sourceName: filename);
+        pageCount = doc.pages.length;
+        await doc.dispose();
+      } catch (_) {
+        // Unreadable locally; the reader will report the count once it opens.
+      }
     }
     final cleanTitle = (title ?? '').trim();
     progress?.setStage(UploadStage.uploading);
@@ -140,9 +144,16 @@ class LibraryNotifier extends AsyncNotifier<LibraryData> {
       onProgress: progress?.setFraction,
     );
     progress?.setStage(UploadStage.processing);
-    // Keep the freshly uploaded bytes so it can be read offline immediately.
-    await _repo.cache.writeBook(book.id, bytes);
-    _patch((d) => d.copyWith(books: [book, ...d.books], downloaded: {...d.downloaded, book.id}));
+    // Keep a freshly uploaded PDF so it can be read offline immediately. A
+    // Word document is read from the text the server extracted, which is
+    // fetched (and cached) when the book is first opened.
+    if (!book.isText) await _repo.cache.writeBook(book.id, bytes);
+    _patch(
+      (d) => d.copyWith(
+        books: [book, ...d.books],
+        downloaded: book.isText ? d.downloaded : {...d.downloaded, book.id},
+      ),
+    );
     return book;
   }
 
@@ -157,7 +168,7 @@ class LibraryNotifier extends AsyncNotifier<LibraryData> {
   // --- offline copies ------------------------------------------------------
 
   Future<void> download(Book book, {void Function(double)? onProgress}) async {
-    await _repo.download(book.id, onProgress: onProgress);
+    await _repo.download(book, onProgress: onProgress);
     _patch((d) => d.copyWith(downloaded: {...d.downloaded, book.id}));
   }
 

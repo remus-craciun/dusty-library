@@ -1,6 +1,7 @@
 package api
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -9,18 +10,22 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/remus/dusty-library/server/internal/extract"
 	"github.com/remus/dusty-library/server/internal/store"
 )
 
 type testEnv struct {
-	t     *testing.T
-	srv   *httptest.Server
-	token string
+	t        *testing.T
+	srv      *httptest.Server
+	token    string
+	booksDir string
 }
 
 func newEnv(t *testing.T) *testEnv {
@@ -41,7 +46,7 @@ func newEnv(t *testing.T) *testEnv {
 	})
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return &testEnv{t: t, srv: srv}
+	return &testEnv{t: t, srv: srv, booksDir: filepath.Join(dir, "books")}
 }
 
 func (e *testEnv) do(method, path string, body any, into any) *http.Response {
@@ -339,5 +344,155 @@ func TestSettings(t *testing.T) {
 	e.do("GET", "/api/settings", nil, &st)
 	if st.Zoom != 1.5 || st.Filter != "paper" {
 		t.Fatalf("settings not persisted: %+v", st)
+	}
+}
+
+// uploadFile posts raw file bytes and returns the status and decoded body.
+func (e *testEnv) uploadFile(name string, content []byte, pageCount string) (int, map[string]any) {
+	e.t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if pageCount != "" {
+		mw.WriteField("page_count", pageCount)
+	}
+	fw, _ := mw.CreateFormFile("file", name)
+	fw.Write(content)
+	mw.Close()
+	req, _ := http.NewRequest("POST", e.srv.URL+"/api/books", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+e.token)
+	res, err := e.srv.Client().Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var out map[string]any
+	json.NewDecoder(res.Body).Decode(&out)
+	return res.StatusCode, out
+}
+
+func TestUploadWordDocuments(t *testing.T) {
+	e := newEnv(t)
+	e.register()
+
+	want := []string{
+		"The Dusty Library",
+		"It was a “quiet” evening in the café — the lamps were low.",
+		"Second line one\nsecond line two",
+		"Cell A",
+		"Cell B",
+		"Ünïcödé ends here.",
+	}
+	for _, format := range []string{"docx", "doc"} {
+		content, err := os.ReadFile(filepath.Join("..", "extract", "testdata", "sample."+format))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The client's page_count is ignored for Word documents.
+		status, body := e.uploadFile("Sample Story."+format, content, "999")
+		if status != http.StatusCreated {
+			t.Fatalf("%s upload: status %d %v", format, status, body)
+		}
+		id := int64(body["id"].(float64))
+		if body["format"] != format || body["title"] != "Sample Story" || body["page_count"] != float64(len(want)) {
+			t.Fatalf("%s: unexpected book %v", format, body)
+		}
+
+		var text extract.Book
+		res := e.do("GET", fmt.Sprintf("/api/books/%d/text", id), nil, &text)
+		if res.StatusCode != http.StatusOK || !reflect.DeepEqual(text.Paragraphs, want) {
+			t.Fatalf("%s text: %d %q", format, res.StatusCode, text.Paragraphs)
+		}
+
+		res = e.do("GET", fmt.Sprintf("/api/books/%d/file", id), nil, nil)
+		raw, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		if !bytes.Equal(raw, content) || res.Header.Get("Content-Type") != bookContentTypes[format] {
+			t.Fatalf("%s file: %d bytes, type %q", format, len(raw), res.Header.Get("Content-Type"))
+		}
+
+		if res := e.do("DELETE", fmt.Sprintf("/api/books/%d", id), nil, nil); res.StatusCode != http.StatusNoContent {
+			t.Fatalf("%s delete: %d", format, res.StatusCode)
+		}
+		left, _ := filepath.Glob(filepath.Join(e.booksDir, fmt.Sprintf("%d.*", id)))
+		if len(left) != 0 {
+			t.Fatalf("%s delete left files %v", format, left)
+		}
+	}
+
+	// PDFs have no extracted text.
+	pdf := e.upload("Plain", 3)
+	if pdf.Format != "pdf" {
+		t.Fatalf("pdf format %q", pdf.Format)
+	}
+	if res := e.do("GET", fmt.Sprintf("/api/books/%d/text", pdf.ID), nil, nil); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("pdf text: expected 404, got %d", res.StatusCode)
+	}
+
+	// A zip that is not a Word document, and unknown binaries, are rejected.
+	var zbuf bytes.Buffer
+	zw := zip.NewWriter(&zbuf)
+	w, _ := zw.Create("readme.txt")
+	w.Write([]byte("hi"))
+	zw.Close()
+	for name, content := range map[string][]byte{
+		"archive.docx": zbuf.Bytes(),
+		"program.exe":  []byte("MZ\x90\x00\x03\x00\x00\x00"),
+	} {
+		if status, body := e.uploadFile(name, content, ""); status != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400, got %d %v", name, status, body)
+		}
+	}
+	left, _ := filepath.Glob(filepath.Join(e.booksDir, "upload-*"))
+	if len(left) != 0 {
+		t.Fatalf("rejected uploads left temp files %v", left)
+	}
+}
+
+// Word books keep their notes, and text stored before notes were extracted
+// (no version) is extracted again when it is next read.
+func TestBookTextNotesAndUpgrade(t *testing.T) {
+	e := newEnv(t)
+	e.register()
+	content, err := os.ReadFile(filepath.Join("..", "extract", "testdata", "notes.docx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, body := e.uploadFile("notes.docx", content, "")
+	if status != http.StatusCreated {
+		t.Fatalf("upload: %d %v", status, body)
+	}
+	id := int64(body["id"].(float64))
+	path := fmt.Sprintf("/api/books/%d/text", id)
+
+	var text extract.Book
+	e.do("GET", path, nil, &text)
+	if text.Version != extract.Version || len(text.Notes) != 3 || text.Notes[0].Text != "Văd că te-am speriat." {
+		t.Fatalf("text %+v", text)
+	}
+
+	// Simulate a book stored by the previous release, with a stale count.
+	old := filepath.Join(e.booksDir, fmt.Sprintf("%d.json", id))
+	os.WriteFile(old, []byte(`{"paragraphs":["Chapter One","stale"]}`), 0o644)
+	var patched store.Book
+	e.do("PATCH", fmt.Sprintf("/api/books/%d", id), map[string]any{"page_count": 2}, &patched)
+
+	text = extract.Book{}
+	e.do("GET", path, nil, &text)
+	if text.Version != extract.Version || len(text.Paragraphs) != 3 || len(text.Notes) != 3 {
+		t.Fatalf("upgraded text %+v", text)
+	}
+	var book store.Book
+	e.do("GET", fmt.Sprintf("/api/books/%d", id), nil, &book)
+	if book.PageCount != 3 {
+		t.Fatalf("page count not updated: %d", book.PageCount)
+	}
+
+	// Version 2 (notes, no headings) is upgraded too.
+	os.WriteFile(old, []byte(`{"version":2,"paragraphs":["a","b","c"],"notes":[]}`), 0o644)
+	text = extract.Book{}
+	e.do("GET", path, nil, &text)
+	if text.Version != extract.Version || text.Headings == nil || len(text.Notes) != 3 {
+		t.Fatalf("v2 upgrade: %+v", text)
 	}
 }

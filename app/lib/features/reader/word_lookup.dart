@@ -118,9 +118,11 @@ class Translation {
   final String? sourceLanguage;
 }
 
-final _wordChar = RegExp(r"[\p{L}\p{M}\p{N}'’\-]", unicode: true);
+// Digits count as word characters, but not superscript ones (\p{No}): those
+// are note markers in text books, as in "Buonaparte¹".
+final _wordChar = RegExp(r"[\p{L}\p{M}\p{Nd}\p{Nl}'’\-]", unicode: true);
 final _word = RegExp(
-  r"[\p{L}\p{M}\p{N}]+(?:['’\-][\p{L}\p{M}\p{N}]+)*",
+  r"[\p{L}\p{M}\p{Nd}\p{Nl}]+(?:['’\-][\p{L}\p{M}\p{Nd}\p{Nl}]+)*",
   unicode: true,
 );
 

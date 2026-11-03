@@ -278,7 +278,7 @@ Future<void> showBookMenu(BuildContext context, WidgetRef ref, Book book, {requi
         final ok = await confirm(
           context,
           title: 'Delete "${book.title}"?',
-          message: 'The PDF and your reading progress will be removed from the server.',
+          message: 'The book file and your reading progress will be removed from the server.',
         );
         if (ok) await notifier.deleteBook(book);
     }

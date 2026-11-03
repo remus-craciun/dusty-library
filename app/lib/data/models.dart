@@ -46,6 +46,16 @@ class Shelf {
       Shelf(id: id, name: name ?? this.name, kind: kind, sortOrder: sortOrder);
 }
 
+/// Book file formats as reported by the server.
+abstract final class BookFormat {
+  static const pdf = 'pdf';
+  static const docx = 'docx';
+  static const doc = 'doc';
+
+  /// File extensions the library accepts for upload.
+  static const uploadExtensions = ['pdf', 'docx', 'doc'];
+}
+
 class Book {
   const Book({
     required this.id,
@@ -53,6 +63,7 @@ class Book {
     required this.title,
     required this.author,
     required this.filename,
+    this.format = BookFormat.pdf,
     required this.sizeBytes,
     required this.pageCount,
     required this.currentPage,
@@ -67,6 +78,11 @@ class Book {
   final String title;
   final String author;
   final String filename;
+
+  /// 'pdf', 'docx' or 'doc'. Word documents are read as reflowable text: their
+  /// [pageCount] is the number of paragraphs and [currentPage]/[pageOffset]
+  /// a paragraph index and how far through it the reader is.
+  final String format;
   final int sizeBytes;
   final int pageCount;
   final int currentPage;
@@ -83,12 +99,16 @@ class Book {
 
   bool get isFinished => pageCount > 0 && currentPage >= pageCount;
 
+  /// Whether the book is read as extracted text rather than as PDF pages.
+  bool get isText => format != BookFormat.pdf;
+
   factory Book.fromJson(Map<String, dynamic> j) => Book(
     id: j['id'] as int,
     shelfId: j['shelf_id'] as int,
     title: j['title'] as String,
     author: (j['author'] as String?) ?? '',
     filename: (j['filename'] as String?) ?? '',
+    format: (j['format'] as String?) ?? BookFormat.pdf,
     sizeBytes: (j['size_bytes'] as num?)?.toInt() ?? 0,
     pageCount: (j['page_count'] as num?)?.toInt() ?? 0,
     currentPage: (j['current_page'] as num?)?.toInt() ?? 0,
@@ -104,6 +124,7 @@ class Book {
     'title': title,
     'author': author,
     'filename': filename,
+    'format': format,
     'size_bytes': sizeBytes,
     'page_count': pageCount,
     'current_page': currentPage,
@@ -128,6 +149,7 @@ class Book {
     title: title ?? this.title,
     author: author ?? this.author,
     filename: filename,
+    format: format,
     sizeBytes: sizeBytes,
     pageCount: pageCount ?? this.pageCount,
     currentPage: currentPage ?? this.currentPage,

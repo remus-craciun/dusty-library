@@ -63,6 +63,7 @@ func New(o Options) http.Handler {
 	private.HandleFunc("PATCH /api/books/{id}", s.handlePatchBook)
 	private.HandleFunc("DELETE /api/books/{id}", s.handleDeleteBook)
 	private.HandleFunc("GET /api/books/{id}/file", s.handleBookFile)
+	private.HandleFunc("GET /api/books/{id}/text", s.handleBookText)
 	private.HandleFunc("PUT /api/books/{id}/progress", s.handleProgress)
 
 	public.Handle("/api/", auth.Middleware(s.resolveToken, private))

@@ -14,7 +14,7 @@ import 'word_lookup.dart';
 /// Lets the reader screen drive a [FocusReader] (go to page).
 class FocusReaderController {
   Future<void> Function(int pageNumber)? _goTo;
-  Future<void> Function(int direction)? _turn;
+  Future<void> Function(int direction, bool animate)? _turn;
   void Function(double delta)? _scrollBy;
   ReadingSpot? Function()? _spot;
 
@@ -24,7 +24,9 @@ class FocusReaderController {
   Future<void> goToPage(int pageNumber) async => _goTo?.call(pageNumber);
 
   /// Moves by one screen. [direction] is 1 for forward and -1 for back.
-  Future<void> turn(int direction) async => _turn?.call(direction);
+  /// Without [animate] the view jumps there.
+  Future<void> turn(int direction, {bool animate = true}) async =>
+      _turn?.call(direction, animate);
 
   /// Scrolls by [delta] logical pixels. Positive moves down the book.
   void scrollBy(double delta) => _scrollBy?.call(delta);
@@ -474,7 +476,7 @@ class _FocusReaderState extends State<FocusReader> {
     scroll.jumpTo(_clampOffset(pos.pixels + delta, pos));
   }
 
-  Future<void> _turn(int direction) async {
+  Future<void> _turn(int direction, bool animate) async {
     final scroll = _scroll;
     if (scroll == null || !scroll.hasClients || direction == 0) return;
     final pos = scroll.position;
@@ -482,6 +484,10 @@ class _FocusReaderState extends State<FocusReader> {
       pos.pixels + direction * pos.viewportDimension,
       pos,
     );
+    if (!animate) {
+      scroll.jumpTo(target);
+      return;
+    }
     await scroll.animateTo(
       target,
       duration: const Duration(milliseconds: 220),
