@@ -162,7 +162,7 @@ class ReaderSettingsSheet extends ConsumerWidget {
                 value: focus,
                 onChanged: (v) => ref.read(focusModeProvider.notifier).set(v),
                 title: const Text('Focus mode'),
-                subtitle: const Text('Trim page margins so the text fills the screen width and keep the screen awake.'),
+                subtitle: const Text('Trim page margins so the text fills the screen width.'),
                 secondary: FocusIcon(active: focus),
               ),
             SwitchListTile(

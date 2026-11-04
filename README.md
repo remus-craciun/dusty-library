@@ -13,10 +13,10 @@ Features
   "old paper" tint that mimics a faded paperback page, sepia and dark.
 - Focus mode (toolbar button or reading settings): the blank page margins are
   trimmed so the paragraphs fill the whole width of the screen, pages flow as
-  one continuous sheet, and the screen is kept awake while you read. The
-  setting is per device. Edge taps (also in reading settings) move one screen
+  one continuous sheet. The setting is per device. Edge taps (also in reading settings) move one screen
   back or forward when you tap the left or right 20% of the page. On the web,
   the arrow keys scroll the page.
+- The screen stays on (no auto-lock) while a book is open.
 - Progress bar per book in the library.
 - Shelves: `Active` and `Completed` are built in; create, rename and delete your
   own shelves.

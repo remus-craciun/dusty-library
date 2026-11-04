@@ -109,12 +109,17 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     _library; // resolve now, while ref is usable
     _load();
     _scheduleChromeHide();
-    _syncWakelock(ref.read(focusModeProvider));
+    _keepAwake();
   }
 
-  /// Focus mode keeps the screen awake while the reader is open.
-  void _syncWakelock(bool focus) {
-    WakelockPlus.toggle(enable: focus).catchError((Object _) {});
+  /// The screen stays on while a book is open, so it does not lock mid-page.
+  /// Browsers drop the wake lock whenever the tab is hidden, so it is taken
+  /// again each time the app comes back to the foreground.
+  late final _lifecycle = AppLifecycleListener(onResume: _keepAwake);
+
+  void _keepAwake() {
+    _lifecycle; // start listening
+    WakelockPlus.enable().catchError((Object _) {});
   }
 
   Future<void> _load() async {
@@ -154,6 +159,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     _flushProgress();
     _downloadProgress.dispose();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    _lifecycle.dispose();
     WakelockPlus.disable().catchError((Object _) {});
     super.dispose();
   }
@@ -693,7 +699,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
         SnackBar(
           content: Text(
             on
-                ? 'Focus mode on: margins trimmed, screen stays awake.'
+                ? 'Focus mode on: margins trimmed.'
                 : 'Focus mode off.',
           ),
           duration: const Duration(seconds: 2),
@@ -788,7 +794,6 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     final isText = book?.isText ?? false;
     // Focus mode trims PDF page margins; text books have none to trim.
     final focus = ref.watch(focusModeProvider) && !isText;
-    ref.listen(focusModeProvider, (_, on) => _syncWakelock(on && !_isText));
     if (_shownFocus != focus) {
       // The viewer that is about to mount starts at the top of a page.
       // Ignore that until it has moved to the saved spot. Take the spot from
