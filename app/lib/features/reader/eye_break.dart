@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/server_config.dart';
@@ -92,17 +93,34 @@ final eyeBreakProvider = NotifierProvider<EyeBreakNotifier, EyeBreakSettings>(
   EyeBreakNotifier.new,
 );
 
-/// Wraps the reader. While eye breaks are on, it counts reading time (only
-/// while the app is in the foreground) and, when the interval is up, blurs
-/// [child] behind a countdown. Input to the page is blocked during the break;
-/// it can be skipped.
+/// Wraps the reader. While eye breaks are on, it counts reading time and,
+/// when the interval is up, blurs the whole app (open sheets included) behind
+/// a countdown. Input is blocked during the break; it can be skipped, and the
+/// phone vibrates when it ends on its own.
+///
+/// Time away counts as a break: the count starts over after the app has been
+/// in the background for at least the break length, or after [idleLimit]
+/// without a tap, swipe or key press on the page.
 class EyeBreakOverlay extends ConsumerStatefulWidget {
-  const EyeBreakOverlay({super.key, required this.child, this.foreground});
+  const EyeBreakOverlay({
+    super.key,
+    required this.child,
+    this.foreground,
+    this.idleLimit = const Duration(minutes: 5),
+    this.now = DateTime.now,
+  });
 
   final Widget child;
 
   /// Colour of the countdown text; defaults to the theme's onSurface.
   final Color? foreground;
+
+  /// With no input on the page for this long, the reader is taken to be away:
+  /// reading time stops counting and starts over on the next input.
+  final Duration idleLimit;
+
+  /// Wall clock, used to measure time spent in the background.
+  final DateTime Function() now;
 
   @override
   ConsumerState<EyeBreakOverlay> createState() => _EyeBreakOverlayState();
@@ -110,18 +128,33 @@ class EyeBreakOverlay extends ConsumerStatefulWidget {
 
 class _EyeBreakOverlayState extends ConsumerState<EyeBreakOverlay> {
   Timer? _ticker;
+  Timer? _buzz;
 
   /// Seconds read since the last break.
   int _readSeconds = 0;
+
+  /// Seconds in the foreground with no input on the page.
+  int _idleSeconds = 0;
 
   /// Seconds left in the current break, or null when not on a break.
   int? _breakLeft;
 
   bool _visible = true;
+  DateTime? _hiddenAt;
+
+  /// The break panel, shown in the root overlay so it covers open sheets.
+  OverlayEntry? _entry;
+  bool _panelShown = false;
+
+  /// Last countdown value, kept on screen while the panel fades out.
+  int _lastSeconds = 0;
 
   late final _lifecycle = AppLifecycleListener(
-    onShow: () => _visible = true,
-    onHide: () => _visible = false,
+    onShow: _onShow,
+    onHide: () {
+      _visible = false;
+      _hiddenAt = widget.now();
+    },
   );
 
   @override
@@ -131,14 +164,29 @@ class _EyeBreakOverlayState extends ConsumerState<EyeBreakOverlay> {
     _sync(ref.read(eyeBreakProvider));
   }
 
+  void _onShow() {
+    _visible = true;
+    final hiddenAt = _hiddenAt;
+    _hiddenAt = null;
+    if (hiddenAt == null) return;
+    final away = widget.now().difference(hiddenAt);
+    if (away.inSeconds >= ref.read(eyeBreakProvider).breakSeconds) {
+      _restart();
+    }
+  }
+
+  void _onActivity() {
+    if (_idleSeconds >= widget.idleLimit.inSeconds) _readSeconds = 0;
+    _idleSeconds = 0;
+  }
+
   void _sync(EyeBreakSettings s) {
     if (s.enabled) {
       _ticker ??= Timer.periodic(const Duration(seconds: 1), (_) => _tick());
     } else {
       _ticker?.cancel();
       _ticker = null;
-      _readSeconds = 0;
-      if (_breakLeft != null) setState(() => _breakLeft = null);
+      _restart();
     }
   }
 
@@ -147,25 +195,99 @@ class _EyeBreakOverlayState extends ConsumerState<EyeBreakOverlay> {
     final s = ref.read(eyeBreakProvider);
     final left = _breakLeft;
     if (left != null) {
-      setState(() => _breakLeft = left > 1 ? left - 1 : null);
+      if (left > 1) {
+        _setBreak(left - 1);
+      } else {
+        _restart();
+        _vibrate();
+      }
       return;
     }
+    if (_idleSeconds < widget.idleLimit.inSeconds) _idleSeconds++;
+    if (_idleSeconds >= widget.idleLimit.inSeconds) return; // away
     _readSeconds++;
     if (_readSeconds >= s.intervalMinutes * 60) {
       _readSeconds = 0;
-      setState(() => _breakLeft = s.breakSeconds);
+      _setBreak(s.breakSeconds);
     }
   }
 
-  void _skip() => setState(() {
-    _breakLeft = null;
+  /// Ends any break and starts counting reading time from zero.
+  void _restart() {
     _readSeconds = 0;
-  });
+    _idleSeconds = 0;
+    if (_breakLeft != null) _setBreak(null);
+  }
+
+  void _vibrate() {
+    HapticFeedback.vibrate();
+    _buzz?.cancel();
+    _buzz = Timer(const Duration(milliseconds: 300), HapticFeedback.vibrate);
+  }
+
+  void _setBreak(int? left) {
+    if (!mounted) return;
+    setState(() => _breakLeft = left);
+    if (left != null) {
+      _lastSeconds = left;
+      _panelShown = true;
+      if (_entry == null) {
+        // Insert transparent, then fade in on the next frame.
+        _panelShown = false;
+        _entry = OverlayEntry(builder: _buildEntry);
+        Overlay.of(context, rootOverlay: true).insert(_entry!);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_entry == null || _breakLeft == null) return;
+          _panelShown = true;
+          _entry!.markNeedsBuild();
+        });
+      }
+    } else {
+      _panelShown = false;
+    }
+    _entry?.markNeedsBuild();
+  }
+
+  void _removeEntry() {
+    _entry?.remove();
+    _entry?.dispose();
+    _entry = null;
+  }
+
+  Widget _buildEntry(BuildContext context) {
+    final total = ref.read(eyeBreakProvider).breakSeconds;
+    final left = _breakLeft;
+    return IgnorePointer(
+      ignoring: left == null,
+      child: AnimatedOpacity(
+        opacity: _panelShown ? 1 : 0,
+        duration: const Duration(milliseconds: 400),
+        onEnd: () {
+          if (!_panelShown && _breakLeft == null) _removeEntry();
+        },
+        // Opaque, so taps never reach the page or a sheet underneath.
+        child: Listener(
+          behavior: HitTestBehavior.opaque,
+          child: Material(
+            type: MaterialType.transparency,
+            child: _BreakPanel(
+              secondsLeft: left ?? _lastSeconds,
+              totalSeconds: total,
+              foreground: widget.foreground,
+              onSkip: _restart,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   void dispose() {
     _ticker?.cancel();
+    _buzz?.cancel();
     _lifecycle.dispose();
+    _removeEntry();
     super.dispose();
   }
 
@@ -176,37 +298,30 @@ class _EyeBreakOverlayState extends ConsumerState<EyeBreakOverlay> {
       if (prev?.intervalMinutes != next.intervalMinutes) _readSeconds = 0;
       _sync(next);
     });
-    final left = _breakLeft;
-    final total = ref.watch(eyeBreakProvider.select((s) => s.breakSeconds));
-    final onBreak = left != null;
+    final onBreak = _breakLeft != null;
 
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        ExcludeFocus(
+    return Listener(
+      // Any touch on the reader counts, even on blank margins.
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (_) => _onActivity(),
+      child: Focus(
+        canRequestFocus: false,
+        skipTraversal: true,
+        onKeyEvent: (_, _) {
+          _onActivity();
+          return KeyEventResult.ignored;
+        },
+        child: ExcludeFocus(
           excluding: onBreak,
           child: AbsorbPointer(absorbing: onBreak, child: widget.child),
         ),
-        AnimatedSwitcher(
-          duration: const Duration(milliseconds: 400),
-          child: onBreak
-              ? _BreakPanel(
-                  key: const ValueKey('eye-break'),
-                  secondsLeft: left,
-                  totalSeconds: total,
-                  foreground: widget.foreground,
-                  onSkip: _skip,
-                )
-              : const SizedBox.shrink(),
-        ),
-      ],
+      ),
     );
   }
 }
 
 class _BreakPanel extends StatelessWidget {
   const _BreakPanel({
-    super.key,
     required this.secondsLeft,
     required this.totalSeconds,
     required this.onSkip,
