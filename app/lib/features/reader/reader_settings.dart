@@ -5,6 +5,7 @@ import '../../core/api_client.dart';
 import '../../core/session.dart';
 import '../../core/theme.dart';
 import '../../data/models.dart';
+import 'eye_break.dart';
 import 'focus_mode.dart';
 
 /// Reader preferences (zoom and page filter), synced with the server and cached
@@ -147,92 +148,168 @@ class ReaderSettingsSheet extends ConsumerWidget {
     final focus = ref.watch(focusModeProvider) && !textBook;
     final edgeTap = ref.watch(edgeTapProvider);
     final pageAnimation = ref.watch(pageAnimationProvider);
+    final eyeBreak = ref.watch(eyeBreakProvider);
+    final eyeBreakNotifier = ref.read(eyeBreakProvider.notifier);
     final theme = Theme.of(context);
 
     return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (!textBook)
+      child: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (!textBook)
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: focus,
+                  onChanged: (v) => ref.read(focusModeProvider.notifier).set(v),
+                  title: const Text('Focus mode'),
+                  subtitle: const Text('Trim page margins so the text fills the screen width.'),
+                  secondary: FocusIcon(active: focus),
+                ),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
-                value: focus,
-                onChanged: (v) => ref.read(focusModeProvider.notifier).set(v),
-                title: const Text('Focus mode'),
-                subtitle: const Text('Trim page margins so the text fills the screen width.'),
-                secondary: FocusIcon(active: focus),
-              ),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: edgeTap,
-              onChanged: (v) => ref.read(edgeTapProvider.notifier).set(v),
-              title: const Text('Edge taps'),
-              subtitle: Text(
-                textBook
-                    ? 'Tap the left or right 20% of the screen to turn the page.'
-                    : 'Tap the left or right 20% of the screen to move back or forward by one screen.',
-              ),
-              secondary: const Icon(Icons.touch_app_outlined),
-            ),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: pageAnimation,
-              onChanged: (v) => ref.read(pageAnimationProvider.notifier).set(v),
-              title: const Text('Page animation'),
-              subtitle: Text(
-                textBook
-                    ? 'Slide pages in when turning them. Off, the next page appears at once.'
-                    : 'Scroll smoothly when moving by a screen. Off, the view jumps.',
-              ),
-              secondary: const Icon(Icons.auto_stories_outlined),
-            ),
-            const SizedBox(height: 8),
-            Text('Text size', style: theme.textTheme.titleMedium),
-            if (focus)
-              Padding(
-                padding: const EdgeInsets.only(top: 4, bottom: 8),
-                child: Text(
-                  'In focus mode the text is sized to the width of the screen.',
-                  style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                value: edgeTap,
+                onChanged: (v) => ref.read(edgeTapProvider.notifier).set(v),
+                title: const Text('Edge taps'),
+                subtitle: Text(
+                  textBook
+                      ? 'Tap the left or right 20% of the screen to turn the page.'
+                      : 'Tap the left or right 20% of the screen to move back or forward by one screen.',
                 ),
-              )
-            else
-              Row(
-                children: [
-                  const Icon(Icons.text_decrease),
-                  Expanded(
-                    child: Slider(
-                      value: settings.zoom,
-                      min: ReaderSettings.minZoom,
-                      max: ReaderSettings.maxZoom,
-                      divisions: 18,
-                      label: '${(settings.zoom * 100).round()}%',
-                      onChanged: (v) {
-                        notifier.setZoom(v);
-                        onZoomChanged(v);
-                      },
-                    ),
+                secondary: const Icon(Icons.touch_app_outlined),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: pageAnimation,
+                onChanged: (v) => ref.read(pageAnimationProvider.notifier).set(v),
+                title: const Text('Page animation'),
+                subtitle: Text(
+                  textBook
+                      ? 'Slide pages in when turning them. Off, the next page appears at once.'
+                      : 'Scroll smoothly when moving by a screen. Off, the view jumps.',
+                ),
+                secondary: const Icon(Icons.auto_stories_outlined),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: eyeBreak.enabled,
+                onChanged: eyeBreakNotifier.setEnabled,
+                title: const Text('Eye breaks'),
+                subtitle: Text(
+                  'Every ${eyeBreak.intervalMinutes} min, blur the page for '
+                  '${eyeBreak.breakSeconds} s so you look away (the 20-20-20 rule).',
+                ),
+                secondary: const Icon(Icons.visibility_outlined),
+              ),
+              if (eyeBreak.enabled) ...[
+                _LabeledSlider(
+                  label: 'Every',
+                  value: eyeBreak.intervalMinutes,
+                  min: EyeBreakSettings.minMinutes,
+                  max: EyeBreakSettings.maxMinutes,
+                  step: 5,
+                  unit: 'min',
+                  onChanged: eyeBreakNotifier.setIntervalMinutes,
+                ),
+                _LabeledSlider(
+                  label: 'For',
+                  value: eyeBreak.breakSeconds,
+                  min: EyeBreakSettings.minSeconds,
+                  max: EyeBreakSettings.maxSeconds,
+                  step: 5,
+                  unit: 's',
+                  onChanged: eyeBreakNotifier.setBreakSeconds,
+                ),
+              ],
+              const SizedBox(height: 8),
+              Text('Text size', style: theme.textTheme.titleMedium),
+              if (focus)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4, bottom: 8),
+                  child: Text(
+                    'In focus mode the text is sized to the width of the screen.',
+                    style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                   ),
-                  const Icon(Icons.text_increase),
+                )
+              else
+                Row(
+                  children: [
+                    const Icon(Icons.text_decrease),
+                    Expanded(
+                      child: Slider(
+                        value: settings.zoom,
+                        min: ReaderSettings.minZoom,
+                        max: ReaderSettings.maxZoom,
+                        divisions: 18,
+                        label: '${(settings.zoom * 100).round()}%',
+                        onChanged: (v) {
+                          notifier.setZoom(v);
+                          onZoomChanged(v);
+                        },
+                      ),
+                    ),
+                    const Icon(Icons.text_increase),
+                  ],
+                ),
+              const SizedBox(height: 8),
+              Text('Page colour', style: theme.textTheme.titleMedium),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  for (final f in PageFilter.values)
+                    _FilterChip(filter: f, selected: settings.filter == f, onTap: () => notifier.setFilter(f)),
                 ],
               ),
-            const SizedBox(height: 8),
-            Text('Page colour', style: theme.textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: [
-                for (final f in PageFilter.values)
-                  _FilterChip(filter: f, selected: settings.filter == f, onTap: () => notifier.setFilter(f)),
-              ],
-            ),
-          ],
+            ],
+          ),
         ),
       ),
+    );
+  }
+}
+
+/// A whole-number slider with its label and current value, e.g. "Every 20 min".
+class _LabeledSlider extends StatelessWidget {
+  const _LabeledSlider({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.step,
+    required this.unit,
+    required this.onChanged,
+  });
+
+  final String label;
+  final int value;
+  final int min;
+  final int max;
+  final int step;
+  final String unit;
+  final ValueChanged<int> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        SizedBox(width: 56, child: Text(label)),
+        Expanded(
+          child: Slider(
+            value: value.toDouble(),
+            min: min.toDouble(),
+            max: max.toDouble(),
+            divisions: (max - min) ~/ step,
+            label: '$value $unit',
+            onChanged: (v) => onChanged(v.round()),
+          ),
+        ),
+        SizedBox(width: 56, child: Text('$value $unit', textAlign: TextAlign.end)),
+      ],
     );
   }
 }
