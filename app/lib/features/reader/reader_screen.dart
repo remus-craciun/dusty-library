@@ -14,6 +14,7 @@ import '../library/dialogs.dart';
 import '../library/library_providers.dart';
 import 'book_find.dart';
 import 'book_outline.dart';
+import 'eye_break.dart';
 import 'focus_mode.dart';
 import 'focus_reader.dart';
 import 'reader_settings.dart';
@@ -505,6 +506,7 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
+      isScrollControlled: true,
       builder: (_) =>
           ReaderSettingsSheet(onZoomChanged: _applyZoom, textBook: _isText),
     );
@@ -1015,207 +1017,210 @@ class _ReaderScreenState extends ConsumerState<ReaderScreen> {
     return Scaffold(
       backgroundColor: style.chromeBackground,
       // The page owns the full viewport; the bars float over it.
-      body: _arrowKeys(
-        Stack(
-          fit: StackFit.expand,
-          children: [
-            body,
-            // Top bar.
-            Align(
-              alignment: Alignment.topCenter,
-              child: _SlideIn(
-                visible: _chrome,
-                fromTop: true,
-                child: Listener(
-                  onPointerDown: (_) => _keepChrome(),
-                  child: Material(
-                    color: chromeColor,
-                    child: SafeArea(
-                      bottom: false,
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          SizedBox(
-                            height: kToolbarHeight,
-                            child: Row(
-                              children: [
-                                BackButton(color: style.chromeForeground),
-                                Expanded(
-                                  child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        book.title,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .titleMedium
-                                            ?.copyWith(
-                                              color: style.chromeForeground,
-                                            ),
-                                      ),
-                                      if (book.author.isNotEmpty)
-                                        Text(
-                                          book.author,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodySmall
-                                              ?.copyWith(
-                                                color: style.chromeForeground
-                                                    .withValues(alpha: 0.7),
-                                              ),
-                                        ),
-                                    ],
-                                  ),
-                                ),
-                                if (!isText)
-                                  IconButton(
-                                    tooltip: focus
-                                        ? 'Leave focus mode'
-                                        : 'Focus mode',
-                                    color: style.chromeForeground,
-                                    icon: FocusIcon(active: focus),
-                                    onPressed: _bytes != null
-                                        ? _toggleFocusMode
-                                        : null,
-                                  ),
-                                IconButton(
-                                  tooltip: 'Find in book',
-                                  color: style.chromeForeground,
-                                  isSelected: _findOpen,
-                                  icon: const Icon(Icons.search),
-                                  onPressed: _bytes != null
-                                      ? _toggleFind
-                                      : null,
-                                ),
-                                if (!isText || _headings.isNotEmpty)
-                                  IconButton(
-                                    tooltip: 'Contents',
-                                    color: style.chromeForeground,
-                                    icon: _outlineLoading
-                                        ? SizedBox(
-                                            width: 18,
-                                            height: 18,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                              color: style.chromeForeground,
-                                            ),
-                                          )
-                                        : const Icon(
-                                            Icons.format_list_bulleted,
-                                          ),
-                                    onPressed: isText
-                                        ? _openTextContents
-                                        : _bytes != null && !_outlineLoading
-                                        ? _openOutline
-                                        : null,
-                                  ),
-                                IconButton(
-                                  tooltip: 'Go to page',
-                                  color: style.chromeForeground,
-                                  icon: const Icon(Icons.pin_outlined),
-                                  onPressed:
-                                      (isText ? _textPages : _pageCount) > 0
-                                      ? _jumpToPage
-                                      : null,
-                                ),
-                                IconButton(
-                                  tooltip: 'Reading settings',
-                                  color: style.chromeForeground,
-                                  icon: const Icon(Icons.tune),
-                                  onPressed: _openSettings,
-                                ),
-                                IconButton(
-                                  tooltip: 'Edit title / author',
-                                  color: style.chromeForeground,
-                                  icon: const Icon(Icons.edit_outlined),
-                                  onPressed: () async {
-                                    _chromeTimer?.cancel();
-                                    await editBookDetails(context, ref, book);
-                                    _scheduleChromeHide();
-                                  },
-                                ),
-                              ],
-                            ),
-                          ),
-                          if (_findOpen)
-                            ListenableBuilder(
-                              listenable: _find,
-                              builder: (context, _) => _findBar(style),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            // Bottom progress bar.
-            if (_bytes != null)
+      body: EyeBreakOverlay(
+        foreground: style.chromeForeground,
+        child: _arrowKeys(
+          Stack(
+            fit: StackFit.expand,
+            children: [
+              body,
+              // Top bar.
               Align(
-                alignment: Alignment.bottomCenter,
+                alignment: Alignment.topCenter,
                 child: _SlideIn(
                   visible: _chrome,
-                  fromTop: false,
+                  fromTop: true,
                   child: Listener(
                     onPointerDown: (_) => _keepChrome(),
                     child: Material(
                       color: chromeColor,
                       child: SafeArea(
-                        top: false,
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(4),
-                                  child: LinearProgressIndicator(
-                                    value: progress,
-                                    minHeight: 6,
-                                    color: style.chromeForeground,
-                                    backgroundColor: style.chromeForeground
-                                        .withValues(alpha: 0.15),
+                        bottom: false,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(
+                              height: kToolbarHeight,
+                              child: Row(
+                                children: [
+                                  BackButton(color: style.chromeForeground),
+                                  Expanded(
+                                    child: Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          book.title,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .titleMedium
+                                              ?.copyWith(
+                                                color: style.chromeForeground,
+                                              ),
+                                        ),
+                                        if (book.author.isNotEmpty)
+                                          Text(
+                                            book.author,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodySmall
+                                                ?.copyWith(
+                                                  color: style.chromeForeground
+                                                      .withValues(alpha: 0.7),
+                                                ),
+                                          ),
+                                      ],
+                                    ),
                                   ),
-                                ),
+                                  if (!isText)
+                                    IconButton(
+                                      tooltip: focus
+                                          ? 'Leave focus mode'
+                                          : 'Focus mode',
+                                      color: style.chromeForeground,
+                                      icon: FocusIcon(active: focus),
+                                      onPressed: _bytes != null
+                                          ? _toggleFocusMode
+                                          : null,
+                                    ),
+                                  IconButton(
+                                    tooltip: 'Find in book',
+                                    color: style.chromeForeground,
+                                    isSelected: _findOpen,
+                                    icon: const Icon(Icons.search),
+                                    onPressed: _bytes != null
+                                        ? _toggleFind
+                                        : null,
+                                  ),
+                                  if (!isText || _headings.isNotEmpty)
+                                    IconButton(
+                                      tooltip: 'Contents',
+                                      color: style.chromeForeground,
+                                      icon: _outlineLoading
+                                          ? SizedBox(
+                                              width: 18,
+                                              height: 18,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                                color: style.chromeForeground,
+                                              ),
+                                            )
+                                          : const Icon(
+                                              Icons.format_list_bulleted,
+                                            ),
+                                      onPressed: isText
+                                          ? _openTextContents
+                                          : _bytes != null && !_outlineLoading
+                                          ? _openOutline
+                                          : null,
+                                    ),
+                                  IconButton(
+                                    tooltip: 'Go to page',
+                                    color: style.chromeForeground,
+                                    icon: const Icon(Icons.pin_outlined),
+                                    onPressed:
+                                        (isText ? _textPages : _pageCount) > 0
+                                        ? _jumpToPage
+                                        : null,
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Reading settings',
+                                    color: style.chromeForeground,
+                                    icon: const Icon(Icons.tune),
+                                    onPressed: _openSettings,
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Edit title / author',
+                                    color: style.chromeForeground,
+                                    icon: const Icon(Icons.edit_outlined),
+                                    onPressed: () async {
+                                      _chromeTimer?.cancel();
+                                      await editBookDetails(context, ref, book);
+                                      _scheduleChromeHide();
+                                    },
+                                  ),
+                                ],
                               ),
-                              const SizedBox(width: 12),
-                              Text(
-                                folio,
-                                style: TextStyle(
-                                  color: style.chromeForeground,
-                                  fontFeatures: const [
-                                    FontFeature.tabularFigures(),
-                                  ],
-                                ),
+                            ),
+                            if (_findOpen)
+                              ListenableBuilder(
+                                listenable: _find,
+                                builder: (context, _) => _findBar(style),
                               ),
-                            ],
-                          ),
+                          ],
                         ),
                       ),
                     ),
                   ),
                 ),
               ),
-            // Thin always-visible progress hairline when the chrome is hidden.
-            if (_bytes != null && !_chrome && total > 0)
-              Align(
-                alignment: Alignment.bottomCenter,
-                child: IgnorePointer(
-                  child: LinearProgressIndicator(
-                    value: progress,
-                    minHeight: 2,
-                    color: style.chromeForeground.withValues(alpha: 0.6),
-                    backgroundColor: Colors.transparent,
+              // Bottom progress bar.
+              if (_bytes != null)
+                Align(
+                  alignment: Alignment.bottomCenter,
+                  child: _SlideIn(
+                    visible: _chrome,
+                    fromTop: false,
+                    child: Listener(
+                      onPointerDown: (_) => _keepChrome(),
+                      child: Material(
+                        color: chromeColor,
+                        child: SafeArea(
+                          top: false,
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(4),
+                                    child: LinearProgressIndicator(
+                                      value: progress,
+                                      minHeight: 6,
+                                      color: style.chromeForeground,
+                                      backgroundColor: style.chromeForeground
+                                          .withValues(alpha: 0.15),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Text(
+                                  folio,
+                                  style: TextStyle(
+                                    color: style.chromeForeground,
+                                    fontFeatures: const [
+                                      FontFeature.tabularFigures(),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
-              ),
-          ],
+              // Thin always-visible progress hairline when the chrome is hidden.
+              if (_bytes != null && !_chrome && total > 0)
+                Align(
+                  alignment: Alignment.bottomCenter,
+                  child: IgnorePointer(
+                    child: LinearProgressIndicator(
+                      value: progress,
+                      minHeight: 2,
+                      color: style.chromeForeground.withValues(alpha: 0.6),
+                      backgroundColor: Colors.transparent,
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );
